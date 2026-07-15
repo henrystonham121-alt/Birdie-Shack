@@ -302,6 +302,50 @@
   function courseName(id){ const c = STATE.courses.find(c=>c.id===id); return c?c.name:'—'; }
   function courseById(id){ return STATE.courses.find(c=>c.id===id); }
 
+  // ---------- HOLE-BY-HOLE: pars, birdies, eagles ----------
+  function parseNumberList(raw, expectedLen){
+    if(!raw) return null;
+    const parts = String(raw).split(',').map(s=>parseFloat(s.trim())).filter(n=>!isNaN(n));
+    return parts.length===expectedLen ? parts : null;
+  }
+  function classifyHole(score, par){
+    const diff = score - par;
+    if(diff <= -2) return 'eagle';
+    if(diff === -1) return 'birdie';
+    if(diff === 0) return 'par';
+    if(diff === 1) return 'bogey';
+    return 'doublePlus';
+  }
+  function computeHoleStats(round, course){
+    if(!round.holeScores || !course || !course.holePars) return null;
+    const stats = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0};
+    round.holeScores.forEach((s,i)=>{
+      const par = course.holePars[i];
+      if(par===undefined || par===null || s===undefined || s===null) return;
+      const c = classifyHole(s, par);
+      stats[c]++;
+    });
+    return stats;
+  }
+  function playerHoleTally(playerId){
+    const totals = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0, roundsWithData:0};
+    STATE.rounds.filter(r=>r.playerId===playerId).forEach(r=>{
+      if(r.holeScores){
+        const stats = computeHoleStats(r, courseById(r.courseId));
+        if(stats){
+          totals.eagle+=stats.eagle; totals.birdie+=stats.birdie; totals.par+=stats.par;
+          totals.bogey+=stats.bogey; totals.doublePlus+=stats.doublePlus; totals.roundsWithData++;
+        }
+      } else {
+        const me = r.manualEagles||0, mb = r.manualBirdies||0, mp = r.manualPars||0;
+        if(me || mb || mp){
+          totals.eagle+=me; totals.birdie+=mb; totals.par+=mp; totals.roundsWithData++;
+        }
+      }
+    });
+    return totals;
+  }
+
   // ---------- LEADERBOARD ----------
   function buildLeaderboard(){
     return STATE.players.map(p=>{
@@ -310,13 +354,30 @@
       const matches = STATE.matches.filter(m=>m.players.includes(p.id));
       const wins = matches.filter(m=>m.winnerId===p.id).length;
       const losses = matches.filter(m=>m.winnerId && m.winnerId!==p.id).length;
+      const halvedCount = matches.filter(m=>!m.winnerId).length;
       let bestNet = null;
+      let scoreVsHcpTotal = 0;
       if(rounds.length && idx!==null){
         bestNet = Math.min(...rounds.map(r=>Math.round(r.gross - idx)));
+        rounds.forEach(r=>{
+          const course = courseById(r.courseId);
+          if(course) scoreVsHcpTotal += Math.round(course.par - (r.gross - idx));
+        });
       }
-      const points = wins*3 + rounds.length*1;
-      return {player:p, roundsPlayed:rounds.length, idx, wins, losses, bestNet, points};
-    }).sort((a,b)=> b.points-a.points || (a.idx===null?999:a.idx)-(b.idx===null?999:b.idx));
+      const tally = playerHoleTally(p.id);
+      const parsBirdiesTotal = tally.eagle*8 + tally.birdie*5 + tally.par*2;
+      const totalMatches = wins+losses+halvedCount;
+
+      // Averaged per round/match played, so a player with 3 rounds isn't
+      // outranked purely by someone who's logged 30 — volume doesn't buy points.
+      const scoreVsHcpAvg = rounds.length ? Math.round((scoreVsHcpTotal/rounds.length)*10)/10 : 0;
+      const parsBirdiesAvg = rounds.length ? Math.round((parsBirdiesTotal/rounds.length)*10)/10 : 0;
+      const h2hAvg = totalMatches ? Math.round(((wins*3 + halvedCount*1)/totalMatches)*10)/10 : 0;
+      const performanceScore = Math.round((scoreVsHcpAvg + parsBirdiesAvg + h2hAvg)*10)/10;
+
+      return {player:p, roundsPlayed:rounds.length, idx, wins, losses, halved:halvedCount, bestNet, tally,
+        scoreVsHcpAvg, parsBirdiesAvg, h2hAvg, performanceScore};
+    }).sort((a,b)=> b.performanceScore-a.performanceScore || (a.idx===null?999:a.idx)-(b.idx===null?999:b.idx));
   }
 
   // ---------- RENDER ----------
@@ -351,29 +412,67 @@
     if(STATE.players.length===0){
       return `<div class="empty"><strong>No golfers yet</strong>Add your crew in the Players tab to start the ledger.</div>`;
     }
+    const groupTally = {eagle:0,birdie:0,par:0,bogey:0,doublePlus:0};
+    rows.forEach(r=>{ groupTally.eagle+=r.tally.eagle; groupTally.birdie+=r.tally.birdie; groupTally.par+=r.tally.par; groupTally.bogey+=r.tally.bogey; groupTally.doublePlus+=r.tally.doublePlus; });
     return `
       <div class="section-head">
         <h2>Season Leaderboard</h2>
-        <span class="section-note">Points = 3 per head-to-head win + 1 per round logged. Net uses each player's current handicap index.</span>
+        <span class="section-note">Performance Score = Score-vs-Handicap + Pars/Birdies + Head-to-Head. See legend below for the full formula.</span>
       </div>
       <div class="card">
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>HCP Index</th><th>Rounds</th><th>Best Net</th><th>Record</th><th>Points</th></tr></thead>
+          <thead><tr><th>#</th><th>Player</th><th>HCP</th><th>Rounds</th><th>Score vs Hcp (avg)</th><th>Pars/Birdies (avg)</th><th>H2H (avg)</th><th>Performance Score</th></tr></thead>
           <tbody>
             ${rows.map((r,i)=>`
               <tr>
                 <td class="rank ${i===0?'rank-1':''}">${i+1}</td>
-                <td class="name-cell">${r.player.name}${i===0 && r.points>0 ? ' <span class="pill">Top of the ledger</span>':''}</td>
+                <td class="name-cell">${r.player.name}${i===0 && r.performanceScore>0 ? ' <span class="pill">Top of the ledger</span>':''}</td>
                 <td class="mono">${r.idx===null?'NH':r.idx.toFixed(1)}</td>
                 <td class="mono">${r.roundsPlayed}</td>
-                <td class="mono">${r.bestNet===null?'—':r.bestNet}</td>
-                <td class="mono">${r.wins}-${r.losses}</td>
-                <td class="mono">${r.points}</td>
+                <td class="mono">${r.scoreVsHcpAvg>0?'+':''}${r.scoreVsHcpAvg}</td>
+                <td class="mono">${r.parsBirdiesAvg}</td>
+                <td class="mono">${r.h2hAvg} <span class="section-note" style="display:inline;">(${r.wins}-${r.losses}-${r.halved})</span></td>
+                <td class="mono">${r.performanceScore}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
-        <p class="legend">NH = not enough rounds yet for a handicap index (need at least 1, more rounds sharpens accuracy). Handicap uses a simplified World Handicap System calculation from logged rounds.</p>
+        <p class="legend">
+          Every component below is averaged per round (or per match) played, not summed — so someone who's logged 3 rounds is judged on the same footing as someone with 30, not outranked purely by volume.<br>
+          <strong>Score vs Hcp</strong>: average of (course par − net score) across your rounds. Positive means playing better than your handicap predicts.<br>
+          <strong>Pars/Birdies</strong>: average points per round from (8×eagles + 5×birdies + 2×pars) — from hole-by-hole data, or from the manual Eagles/Birdies/Pars counts on a simple score entry.<br>
+          <strong>H2H</strong>: average points per match from your win-loss-halved record; 3pts per win, 1pt per halved match, 0 for a loss. A simple round with no opponent logged doesn't count as a match either way.<br>
+          NH = not enough rounds yet for a handicap index.
+        </p>
+      </div>
+      <div class="section-head" style="margin-top:22px;"><h2>Pars &amp; Birdies Tally</h2></div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Player</th><th>Eagles</th><th>Birdies</th><th>Pars</th><th>Bogeys</th><th>Double+</th><th>Rounds w/ hole data</th></tr></thead>
+          <tbody>
+            ${rows.map(r=>`
+              <tr>
+                <td class="name-cell">${r.player.name}</td>
+                <td class="mono">${r.tally.eagle}</td>
+                <td class="mono">${r.tally.birdie}</td>
+                <td class="mono">${r.tally.par}</td>
+                <td class="mono">${r.tally.bogey}</td>
+                <td class="mono">${r.tally.doublePlus}</td>
+                <td class="mono">${r.tally.roundsWithData}</td>
+              </tr>
+            `).join('')}
+            <tr>
+              <td class="name-cell">Group total</td>
+              <td class="mono">${groupTally.eagle}</td>
+              <td class="mono">${groupTally.birdie}</td>
+              <td class="mono">${groupTally.par}</td>
+              <td class="mono">${groupTally.bogey}</td>
+              <td class="mono">${groupTally.doublePlus}</td>
+              <td class="mono">—</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="legend">Only rounds with hole-by-hole scores (and a course with hole-by-hole pars) count here — a plain gross-score entry won't add to this tally.</p>
       </div>
     `;
   }
@@ -396,6 +495,22 @@
             <div><label>Date</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}" required></div>
             <div><label>Gross score</label><input type="number" name="gross" min="50" max="150" placeholder="e.g. 88" required></div>
           </div>
+          <label>Hole-by-hole scores (optional — 18 numbers, comma-separated)</label>
+          <input type="text" name="holeScores" placeholder="6,5,5,4,5,5,5,4,6,4,5,6,2,5,4,4,6,7">
+          <p class="section-note" style="margin:-6px 0 14px;">Adding these (and hole pars on the course) feeds the Pars &amp; Birdies tally automatically. If you're just entering a total score, use the counts below instead.</p>
+          <label>Eagles / Birdies / Pars this round (optional, default 0 — only used if hole-by-hole scores above are left blank)</label>
+          <div class="form-grid">
+            <div><label style="text-transform:none;font-size:10px;">Eagles</label><input type="number" name="manualEagles" min="0" value="0"></div>
+            <div><label style="text-transform:none;font-size:10px;">Birdies</label><input type="number" name="manualBirdies" min="0" value="0"></div>
+            <div><label style="text-transform:none;font-size:10px;">Pars</label><input type="number" name="manualPars" min="0" value="0"></div>
+          </div>
+          <label>Head-to-head opponent (optional)</label>
+          <select name="opponentId"><option value="">— None, just a simple score —</option>${playerOpts}</select>
+          <div class="form-grid">
+            <div><label>Opponent's gross score</label><input type="number" name="opponentGross" placeholder="only if opponent selected above"></div>
+            <div><label>Stakes (optional)</label><input type="text" name="stakes" placeholder="e.g. Loser buys the first round"></div>
+          </div>
+          <p class="section-note" style="margin:-6px 0 14px;">Leave the opponent blank for a simple score entry — no head-to-head points without an opponent logged here or in the Head-to-Head tab.</p>
           <button class="btn" type="submit" ${disabled?'disabled':''}>Log round</button>
         </form>
       </div>
@@ -403,7 +518,7 @@
       ${rounds.length===0 ? `<div class="empty"><strong>No rounds logged</strong>Log one above, or bring in history via the Import tab.</div>` : `
       <div class="card">
         <table>
-          <thead><tr><th>Date</th><th>Player</th><th>Course</th><th>Gross</th><th>Diff.</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Player</th><th>Course</th><th>Gross</th><th>Diff.</th><th>Holes?</th><th></th></tr></thead>
           <tbody>
             ${rounds.map(r=>{
               const c = courseById(r.courseId);
@@ -414,6 +529,7 @@
                 <td>${r.courseName || courseName(r.courseId)}</td>
                 <td class="mono">${r.gross}${toPar!==null?` <span class="pill ${toPar>0?'over':(toPar<0?'under':'')}">${toPar>0?'+':''}${toPar}</span>`:''}</td>
                 <td class="mono">${r.differential}</td>
+                <td class="mono">${r.holeScores?'✓':'—'}</td>
                 <td><button class="btn ghost small" data-delround="${r.id}">Remove</button></td>
               </tr>`;
             }).join('')}
@@ -483,6 +599,8 @@
             <div><label>Course rating</label><input type="number" step="0.1" name="rating" placeholder="e.g. 71.5" required></div>
             <div><label>Slope</label><input type="number" name="slope" placeholder="e.g. 128" value="113" required></div>
           </div>
+          <label>Hole-by-hole pars (optional — 18 numbers, comma-separated, enables pars/birdies tracking)</label>
+          <input type="text" name="holePars" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
           <button class="btn" type="submit">Add course</button>
         </form>
       </div>
@@ -496,9 +614,9 @@
       </div>
       ${courses.length===0? `<div class="empty"><strong>No courses yet</strong>Add the courses your group plays.</div>` : `
       <div class="card"><table>
-        <thead><tr><th>Course</th><th>Par</th><th>Rating</th><th>Slope</th><th></th></tr></thead>
+        <thead><tr><th>Course</th><th>Par</th><th>Rating</th><th>Slope</th><th>Hole pars?</th><th></th></tr></thead>
         <tbody>${courses.map(c=>`
-          <tr><td class="name-cell">${c.name}</td><td class="mono">${c.par}</td><td class="mono">${c.rating}</td><td class="mono">${c.slope}</td>
+          <tr><td class="name-cell">${c.name}</td><td class="mono">${c.par}</td><td class="mono">${c.rating}</td><td class="mono">${c.slope}</td><td class="mono">${c.holePars?'✓':'—'}</td>
           <td><button class="btn ghost small" data-delcourse="${c.id}">Remove</button></td></tr>
         `).join('')}</tbody>
       </table></div>`}
@@ -577,13 +695,13 @@
     const disabled = STATE.players.length===0;
     return `
       <div class="section-head"><h2>Import from TheGrint</h2></div>
-      <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it.</div>
+      <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it. You can also tack on Eagles/Birdies/Pars as three more trailing columns if you know those counts — they feed the Pars &amp; Birdies tally the same way manual entry does.</div>
       <div class="card">
         <form id="import-form">
           <label>Which player is this scoring history for?</label>
           <select name="playerId" ${disabled?'disabled':''}>${playerOpts||'<option value="">Add a player first</option>'}</select>
-          <label>Paste rows — tab or comma separated: Date, Course, Tees, Score, [Rating, Slope, Par]</label>
-          <textarea name="raw" placeholder="2026-06-01, Alpine Golf Club, White, 89, 71.5, 128, 72
+          <label>Paste rows — tab or comma separated: Date, Course, Tees, Score, [Rating, Slope, Par, Eagles, Birdies, Pars]</label>
+          <textarea name="raw" placeholder="2026-06-01, Alpine Golf Club, White, 89, 71.5, 128, 72, 0, 2, 9
 2026-06-15, Alpine Golf Club, White, 85"></textarea>
           <button class="btn" type="submit" ${disabled?'disabled':''}>Preview import</button>
         </form>
@@ -603,7 +721,7 @@
 
   function renderScorecardPreview(parsed){
     const box = document.getElementById('scorecard-preview');
-    const players = (parsed.players && parsed.players.length) ? parsed.players : [{name:null, totalScore:null}];
+    const players = (parsed.players && parsed.players.length) ? parsed.players : [{name:null, totalScore:null, holeScores:null}];
     const needsAttention = (parsed.rating===null || parsed.rating===undefined || parsed.slope===null || parsed.slope===undefined);
     box.innerHTML = `
       <div class="card" style="margin-top:12px;">
@@ -615,14 +733,22 @@
           <div><label>Rating</label><input type="number" step="0.1" id="sc-rating" value="${parsed.rating||72.0}"></div>
           <div><label>Slope</label><input type="number" id="sc-slope" value="${parsed.slope||113}"></div>
         </div>
+        <label>Hole-by-hole pars (optional, 18 comma-separated)</label>
+        <input type="text" id="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
         <p class="section-note" style="margin-bottom:10px;">${needsAttention ? "Rating/slope weren't legible on the card — defaults are filled in, correct them for accurate handicaps." : "Double-check these against the card before saving."}</p>
         <table>
-          <thead><tr><th>Detected name</th><th>Score</th><th>Assign to</th></tr></thead>
+          <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>E/B/P if no hole scores</th><th>Assign to</th></tr></thead>
           <tbody>
             ${players.map(p=>`
               <tr>
                 <td><input type="text" class="sc-pname" value="${p.name||''}" style="margin-bottom:0;"></td>
                 <td><input type="number" class="sc-pscore" value="${p.totalScore||''}" style="margin-bottom:0;width:80px;"></td>
+                <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="18 comma-separated"></td>
+                <td style="display:flex;gap:4px;">
+                  <input type="number" class="sc-peagles" min="0" value="0" style="margin-bottom:0;width:48px;" title="Eagles">
+                  <input type="number" class="sc-pbirdies" min="0" value="0" style="margin-bottom:0;width:48px;" title="Birdies">
+                  <input type="number" class="sc-ppars" min="0" value="0" style="margin-bottom:0;width:48px;" title="Pars">
+                </td>
                 <td>
                   <select class="sc-passign" style="margin-bottom:0;">
                     <option value="">— New player —</option>
@@ -643,14 +769,16 @@
       const par = parseFloat(document.getElementById('sc-par').value)||72;
       const rating = parseFloat(document.getElementById('sc-rating').value)||72;
       const slope = parseFloat(document.getElementById('sc-slope').value)||113;
+      const holePars = parseNumberList(document.getElementById('sc-holepars').value, 18);
       let course = STATE.courses.find(c=>c.name.toLowerCase()===courseName.toLowerCase());
-      if(!course){ course = {id:uid(), name:courseName, par, rating, slope}; STATE.courses.push(course); }
-      else { course.par=par; course.rating=rating; course.slope=slope; }
+      if(!course){ course = {id:uid(), name:courseName, par, rating, slope, holePars}; STATE.courses.push(course); }
+      else { course.par=par; course.rating=rating; course.slope=slope; if(holePars) course.holePars=holePars; }
       const rows = box.querySelectorAll('tbody tr');
       let count = 0;
       rows.forEach(row=>{
         const name = row.querySelector('.sc-pname').value.trim();
         const scoreVal = row.querySelector('.sc-pscore').value;
+        const holesRaw = row.querySelector('.sc-pholes').value;
         const assign = row.querySelector('.sc-passign').value;
         if(!name || !scoreVal) return;
         let playerId = assign;
@@ -660,8 +788,12 @@
           playerId = newP.id;
         }
         const gross = parseFloat(scoreVal);
+        const holeScores = parseNumberList(holesRaw, 18);
+        const manualEagles = parseInt(row.querySelector('.sc-peagles').value)||0;
+        const manualBirdies = parseInt(row.querySelector('.sc-pbirdies').value)||0;
+        const manualPars = parseInt(row.querySelector('.sc-ppars').value)||0;
         const differential = computeDifferential(gross, course.rating, course.slope);
-        STATE.rounds.push({id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, differential});
+        STATE.rounds.push({id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, differential, holeScores, manualEagles, manualBirdies, manualPars});
         count++;
       });
       await safeSet(KEYS.courses, STATE.courses);
@@ -684,10 +816,35 @@
       const courseId = fd.get('courseId');
       const c = courseById(courseId);
       const gross = parseFloat(fd.get('gross'));
+      const opponentId = fd.get('opponentId');
+      const opponentGrossVal = fd.get('opponentGross');
+      if(opponentId && !opponentGrossVal){
+        showToast("Add the opponent's score, or clear the opponent for a simple entry");
+        return;
+      }
+      const playerId = fd.get('playerId');
+      const date = fd.get('date');
       const differential = computeDifferential(gross, c.rating, c.slope);
-      STATE.rounds.push({id:uid(), playerId:fd.get('playerId'), courseId, courseName:c.name, date:fd.get('date'), gross, differential});
+      const holeScores = parseNumberList(fd.get('holeScores'), 18);
+      const manualEagles = parseInt(fd.get('manualEagles'))||0;
+      const manualBirdies = parseInt(fd.get('manualBirdies'))||0;
+      const manualPars = parseInt(fd.get('manualPars'))||0;
+      STATE.rounds.push({id:uid(), playerId, courseId, courseName:c.name, date, gross, differential, holeScores, manualEagles, manualBirdies, manualPars});
+
+      if(opponentId){
+        const oGross = parseFloat(opponentGrossVal);
+        const oDiff = computeDifferential(oGross, c.rating, c.slope);
+        STATE.rounds.push({id:uid(), playerId:opponentId, courseId, courseName:c.name, date, gross:oGross, differential:oDiff, holeScores:null});
+        const idxA = computeHandicapIndex(playerId);
+        const idxB = computeHandicapIndex(opponentId);
+        const netA = gross - (idxA||0);
+        const netB = oGross - (idxB||0);
+        const winnerId = netA<netB ? playerId : (netB<netA ? opponentId : null);
+        STATE.matches.push({id:uid(), players:[playerId, opponentId], format:'Stroke play (from round)', date, winnerId, stakes:fd.get('stakes')||''});
+        await safeSet(KEYS.matches, STATE.matches);
+      }
       await safeSet(KEYS.rounds, STATE.rounds);
-      showToast('Round logged');
+      showToast(opponentId ? 'Round + head-to-head logged' : 'Round logged');
       render();
     });
 
@@ -719,7 +876,8 @@
     if(courseForm) courseForm.addEventListener('submit', async e=>{
       e.preventDefault();
       const fd = new FormData(courseForm);
-      STATE.courses.push({id:uid(), name:fd.get('name'), par:parseFloat(fd.get('par')), rating:parseFloat(fd.get('rating')), slope:parseFloat(fd.get('slope'))});
+      const holePars = parseNumberList(fd.get('holePars'), 18);
+      STATE.courses.push({id:uid(), name:fd.get('name'), par:parseFloat(fd.get('par')), rating:parseFloat(fd.get('rating')), slope:parseFloat(fd.get('slope')), holePars});
       await safeSet(KEYS.courses, STATE.courses);
       showToast('Course added');
       render();
@@ -760,10 +918,11 @@
       const parsed = lines.map(line=>{
         const delim = line.includes('\t') ? '\t' : ',';
         const cols = line.split(delim).map(s=>s.trim());
-        const [date, course, tees, score, rating, slope, par] = cols;
+        const [date, course, tees, score, rating, slope, par, eagles, birdies, pars] = cols;
         return {
           date: date, course: course, tees: tees||'', score: parseFloat(score),
-          rating: rating?parseFloat(rating):72.0, slope: slope?parseFloat(slope):113, par: par?parseFloat(par):72
+          rating: rating?parseFloat(rating):72.0, slope: slope?parseFloat(slope):113, par: par?parseFloat(par):72,
+          eagles: eagles?parseInt(eagles):0, birdies: birdies?parseInt(birdies):0, pars: pars?parseInt(pars):0
         };
       }).filter(r=> r.course && !isNaN(r.score));
 
@@ -774,8 +933,8 @@
       }
       preview.innerHTML = `
         <div class="banner">Found ${parsed.length} round${parsed.length===1?'':'s'} for ${playerName(playerId)}. Review, then confirm.</div>
-        <table><thead><tr><th>Date</th><th>Course</th><th>Tees</th><th>Score</th><th>Rating</th><th>Slope</th></tr></thead>
-        <tbody>${parsed.map(p=>`<tr><td class="mono">${p.date}</td><td>${p.course}</td><td>${p.tees}</td><td class="mono">${p.score}</td><td class="mono">${p.rating}</td><td class="mono">${p.slope}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>Date</th><th>Course</th><th>Tees</th><th>Score</th><th>Rating</th><th>Slope</th><th>E/B/P</th></tr></thead>
+        <tbody>${parsed.map(p=>`<tr><td class="mono">${p.date}</td><td>${p.course}</td><td>${p.tees}</td><td class="mono">${p.score}</td><td class="mono">${p.rating}</td><td class="mono">${p.slope}</td><td class="mono">${p.eagles}/${p.birdies}/${p.pars}</td></tr>`).join('')}</tbody></table>
         <button class="btn" id="confirm-import" style="margin-top:12px;">Confirm import</button>
       `;
       document.getElementById('confirm-import').addEventListener('click', async ()=>{
@@ -786,7 +945,8 @@
             STATE.courses.push(c);
           }
           const differential = computeDifferential(row.score, c.rating, c.slope);
-          STATE.rounds.push({id:uid(), playerId, courseId:c.id, courseName:c.name, date:row.date, gross:row.score, differential});
+          STATE.rounds.push({id:uid(), playerId, courseId:c.id, courseName:c.name, date:row.date, gross:row.score, differential,
+            manualEagles:row.eagles, manualBirdies:row.birdies, manualPars:row.pars});
         }
         await safeSet(KEYS.courses, STATE.courses);
         await safeSet(KEYS.rounds, STATE.rounds);
@@ -819,7 +979,8 @@
   "par": number or null,
   "rating": number or null,
   "slope": number or null,
-  "players": [ { "name": string or null, "totalScore": number or null } ]
+  "holePars": array of 18 numbers (the per-hole PAR row) or null if not visible,
+  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of 18 numbers (that player's per-hole scores) or null if not visible } ]
 }
 If a total score isn't printed but hole-by-hole scores are visible, sum them yourself. List every player column on the card. Use null for anything genuinely not visible or legible — do not guess.`;
         const data = await callClaudeAPI({
