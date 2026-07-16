@@ -396,6 +396,29 @@
     }
     return counts;
   }
+  // Best statistical performer at a given course: lowest average NET score
+  // (gross minus that player's current handicap index) across their rounds
+  // there. Using net rather than gross means it measures who plays best at
+  // this course relative to their own ability, not just who's lowest-handicap
+  // overall. Requires at least 2 rounds at the course to count as meaningful.
+  function courseChampion(courseId){
+    const byPlayer = {};
+    STATE.rounds.filter(r=>r.courseId===courseId).forEach(r=>{
+      (byPlayer[r.playerId] = byPlayer[r.playerId]||[]).push(r);
+    });
+    let best = null;
+    Object.keys(byPlayer).forEach(playerId=>{
+      const rounds = byPlayer[playerId];
+      if(rounds.length < 2) return;
+      const idx = computeHandicapIndex(playerId);
+      if(idx===null) return;
+      const avgNet = rounds.reduce((sum,r)=> sum + (r.gross - idx), 0) / rounds.length;
+      if(!best || avgNet < best.avgNet){
+        best = {playerId, avgNet: Math.round(avgNet*10)/10, rounds: rounds.length};
+      }
+    });
+    return best;
+  }
   function playerHoleTally(playerId){
     const totals = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0, roundsWithData:0};
     STATE.rounds.filter(r=>r.playerId===playerId).forEach(r=>{
@@ -681,11 +704,13 @@
       </div>
       ${courses.length===0? `<div class="empty"><strong>No courses yet</strong>Add the courses your group plays.</div>` : `
       <div class="card"><table>
-        <thead><tr><th>Course</th><th>Par</th><th>Rating</th><th>Slope</th><th>Hole pars?</th><th></th></tr></thead>
-        <tbody>${courses.map(c=>`
-          <tr><td class="name-cell">${c.name}</td><td class="mono">${c.par}</td><td class="mono">${c.rating}</td><td class="mono">${c.slope}</td><td class="mono">${c.holePars?'✓':'—'}</td>
-          <td><button class="btn ghost small" data-delcourse="${c.id}">Remove</button></td></tr>
-        `).join('')}</tbody>
+        <thead><tr><th>Course</th><th>Par</th><th>Rating</th><th>Slope</th><th>Hole pars?</th><th>King/Queen of the Course</th><th></th></tr></thead>
+        <tbody>${courses.map(c=>{
+          const champ = courseChampion(c.id);
+          return `<tr><td class="name-cell">${c.name}</td><td class="mono">${c.par}</td><td class="mono">${c.rating}</td><td class="mono">${c.slope}</td><td class="mono">${c.holePars?'✓':'—'}</td>
+          <td>${champ ? `${avatarImg(playerName(champ.playerId))}<span class="name-cell">${playerName(champ.playerId)}</span> <span class="section-note">(${champ.avgNet>0?'+':''}${champ.avgNet} avg net, ${champ.rounds} rounds)</span>` : `<span class="section-note">Not enough rounds yet (need 2+ from one player)</span>`}</td>
+          <td><button class="btn ghost small" data-delcourse="${c.id}">Remove</button></td></tr>`;
+        }).join('')}</tbody>
       </table></div>`}
     `;
   }
@@ -744,6 +769,21 @@
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Nikesh" required></div>
           <button class="btn" type="submit">Add golfer</button>
         </form>
+      </div>
+      <div class="section-head" style="margin-top:22px;"><h2>Add Multiple at Once</h2></div>
+      <div class="card">
+        <label>One name per line (or comma-separated) — anyone already on the roster is skipped automatically</label>
+        <textarea id="bulk-player-input">Ben
+Dan
+Jan
+Lloyd
+Sunil
+Nikesh
+Nick
+Suraj
+Phoebe
+Madi</textarea>
+        <button class="btn" id="bulk-add-players-btn">Add all to roster</button>
       </div>
       ${players.length===0? `<div class="empty"><strong>No golfers yet</strong>Add your crew above.</div>` : `
       <div class="card"><table>
@@ -993,6 +1033,24 @@
       await deleteItem(COLLECTIONS.players, id);
       render();
     }));
+
+    const bulkAddBtn = main.querySelector('#bulk-add-players-btn');
+    if(bulkAddBtn) bulkAddBtn.addEventListener('click', async ()=>{
+      const raw = main.querySelector('#bulk-player-input').value;
+      const names = raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
+      if(!names.length) return;
+      let added = 0, skipped = 0;
+      for(const name of names){
+        const exists = STATE.players.find(p=>p.name.toLowerCase()===name.toLowerCase());
+        if(exists){ skipped++; continue; }
+        const newPlayer = {id:uid(), name};
+        STATE.players.push(newPlayer);
+        await saveItem(COLLECTIONS.players, newPlayer);
+        added++;
+      }
+      showToast(`Added ${added} golfer${added===1?'':'s'}${skipped?`, skipped ${skipped} already on the roster`:''}`);
+      render();
+    });
 
     const importForm = main.querySelector('#import-form');
     if(importForm) importForm.addEventListener('submit', e=>{
