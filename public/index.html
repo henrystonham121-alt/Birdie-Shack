@@ -368,12 +368,10 @@
   function playerHoleTally(playerId){
     const totals = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0, roundsWithData:0};
     STATE.rounds.filter(r=>r.playerId===playerId).forEach(r=>{
-      if(r.holeScores){
-        const stats = computeHoleStats(r, courseById(r.courseId));
-        if(stats){
-          totals.eagle+=stats.eagle; totals.birdie+=stats.birdie; totals.par+=stats.par;
-          totals.bogey+=stats.bogey; totals.doublePlus+=stats.doublePlus; totals.roundsWithData++;
-        }
+      const stats = r.holeScores ? computeHoleStats(r, courseById(r.courseId)) : null;
+      if(stats){
+        totals.eagle+=stats.eagle; totals.birdie+=stats.birdie; totals.par+=stats.par;
+        totals.bogey+=stats.bogey; totals.doublePlus+=stats.doublePlus; totals.roundsWithData++;
       } else {
         const me = r.manualEagles||0, mb = r.manualBirdies||0, mp = r.manualPars||0;
         if(me || mb || mp){
@@ -779,7 +777,7 @@
       <input type="text" class="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
       <p class="section-note" style="margin-bottom:10px;">${needsAttention ? "Rating/slope weren't legible on the card — defaults are filled in, correct them for accurate handicaps." : "Double-check these against the card before saving."}</p>
       <table>
-        <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>E/B/P if no hole scores</th><th>Assign to</th></tr></thead>
+        <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>Eagles/Birdies/Pars</th><th>Assign to</th></tr></thead>
         <tbody>
           ${players.map(p=>`
             <tr>
@@ -787,9 +785,9 @@
               <td><input type="number" class="sc-pscore" value="${p.totalScore||''}" style="margin-bottom:0;width:80px;"></td>
               <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="18 comma-separated"></td>
               <td style="display:flex;gap:4px;">
-                <input type="number" class="sc-peagles" min="0" value="0" style="margin-bottom:0;width:48px;" title="Eagles">
-                <input type="number" class="sc-pbirdies" min="0" value="0" style="margin-bottom:0;width:48px;" title="Birdies">
-                <input type="number" class="sc-ppars" min="0" value="0" style="margin-bottom:0;width:48px;" title="Pars">
+                <input type="number" class="sc-peagles" min="0" value="${p.eagles||0}" style="margin-bottom:0;width:48px;" title="Eagles">
+                <input type="number" class="sc-pbirdies" min="0" value="${p.birdies||0}" style="margin-bottom:0;width:48px;" title="Birdies">
+                <input type="number" class="sc-ppars" min="0" value="${p.pars||0}" style="margin-bottom:0;width:48px;" title="Pars">
               </td>
               <td>
                 <select class="sc-passign" style="margin-bottom:0;">
@@ -1039,9 +1037,9 @@
   "rating": number or null,
   "slope": number or null,
   "holePars": array of 18 numbers (the per-hole PAR row) or null if not visible,
-  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of 18 numbers (that player's per-hole scores) or null if not visible } ]
+  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of 18 numbers (that player's per-hole scores) or null if not visible, "eagles": number, "birdies": number, "pars": number } ]
 }
-If a total score isn't printed but hole-by-hole scores are visible, sum them yourself. List every player column on the card. Use null for anything genuinely not visible or legible — do not guess.`;
+If a total score isn't printed but hole-by-hole scores are visible, sum them yourself. List every player column on the card. For each player's eagles/birdies/pars counts: work these out by comparing their hole score to that hole's par wherever both are legible, even if you can't read the full 18-hole row for either — partial data is fine, just count what you can confirm. Many scorecard apps also circle, box, or color-code birdies/eagles/bogeys directly on the card (e.g. a circle around a score usually means birdie, a double circle eagle, a square bogey) — use those markings too if hole pars aren't printed. Default eagles/birdies/pars to 0 only if you genuinely found none, not because you're unsure. Use null for course/card fields genuinely not visible or legible — do not guess.`;
           const data = await callClaudeAPI({
             model:"claude-sonnet-4-6", max_tokens:1000,
             messages:[{role:"user", content:[
