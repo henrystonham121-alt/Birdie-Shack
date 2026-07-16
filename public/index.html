@@ -746,11 +746,11 @@
         </form>
         <div id="import-preview"></div>
       </div>
-      <div class="section-head" style="margin-top:22px;"><h2>Import from a Scorecard Photo</h2></div>
-      <div class="banner">Snap or upload a photo of a scorecard — a TheGrint screenshot or a paper card both work. Claude reads the course, tee, date, and every player's score off the card, then hands you an editable preview before anything's saved.</div>
+      <div class="section-head" style="margin-top:22px;"><h2>Import from Scorecard Photos</h2></div>
+      <div class="banner">Snap or upload photos of scorecards — a TheGrint screenshot or a paper card both work, and you can select several at once. Claude reads each one and hands you an editable preview per card before anything's saved.</div>
       <div class="card">
-        <label>Photo</label>
-        <input type="file" accept="image/*" id="scorecard-photo">
+        <label>Photos (select multiple if you've got a batch)</label>
+        <input type="file" accept="image/*" id="scorecard-photo" multiple>
         <button class="btn" id="extract-scorecard-btn" disabled>Extract scores</button>
         <div id="scorecard-status"></div>
         <div id="scorecard-preview"></div>
@@ -758,62 +758,66 @@
     `;
   }
 
-  function renderScorecardPreview(parsed){
+  function renderScorecardPreview(parsed, sourceLabel){
     const box = document.getElementById('scorecard-preview');
     const players = (parsed.players && parsed.players.length) ? parsed.players : [{name:null, totalScore:null, holeScores:null}];
     const needsAttention = (parsed.rating===null || parsed.rating===undefined || parsed.slope===null || parsed.slope===undefined);
-    box.innerHTML = `
-      <div class="card" style="margin-top:12px;">
-        <div class="form-grid">
-          <div><label>Course</label><input type="text" id="sc-course" value="${parsed.courseName||''}"></div>
-          <div><label>Tee</label><input type="text" id="sc-tee" value="${parsed.teeName||''}"></div>
-          <div><label>Date</label><input type="date" id="sc-date" value="${parsed.date||new Date().toISOString().slice(0,10)}"></div>
-          <div><label>Par</label><input type="number" id="sc-par" value="${parsed.par||72}"></div>
-          <div><label>Rating</label><input type="number" step="0.1" id="sc-rating" value="${parsed.rating||72.0}"></div>
-          <div><label>Slope</label><input type="number" id="sc-slope" value="${parsed.slope||113}"></div>
-        </div>
-        <label>Hole-by-hole pars (optional, 18 comma-separated)</label>
-        <input type="text" id="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
-        <p class="section-note" style="margin-bottom:10px;">${needsAttention ? "Rating/slope weren't legible on the card — defaults are filled in, correct them for accurate handicaps." : "Double-check these against the card before saving."}</p>
-        <table>
-          <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>E/B/P if no hole scores</th><th>Assign to</th></tr></thead>
-          <tbody>
-            ${players.map(p=>`
-              <tr>
-                <td><input type="text" class="sc-pname" value="${p.name||''}" style="margin-bottom:0;"></td>
-                <td><input type="number" class="sc-pscore" value="${p.totalScore||''}" style="margin-bottom:0;width:80px;"></td>
-                <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="18 comma-separated"></td>
-                <td style="display:flex;gap:4px;">
-                  <input type="number" class="sc-peagles" min="0" value="0" style="margin-bottom:0;width:48px;" title="Eagles">
-                  <input type="number" class="sc-pbirdies" min="0" value="0" style="margin-bottom:0;width:48px;" title="Birdies">
-                  <input type="number" class="sc-ppars" min="0" value="0" style="margin-bottom:0;width:48px;" title="Pars">
-                </td>
-                <td>
-                  <select class="sc-passign" style="margin-bottom:0;">
-                    <option value="">— New player —</option>
-                    ${STATE.players.map(rp=>`<option value="${rp.id}" ${(rp.name && p.name && rp.name.toLowerCase()===p.name.toLowerCase())?'selected':''}>${rp.name}</option>`).join('')}
-                  </select>
-                </td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-        <button class="btn" id="sc-confirm" style="margin-top:12px;">Save these rounds</button>
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card';
+    wrapper.style.marginTop = '12px';
+    wrapper.innerHTML = `
+      ${sourceLabel ? `<p class="section-note" style="margin-top:0;">${sourceLabel}</p>` : ''}
+      <div class="form-grid">
+        <div><label>Course</label><input type="text" class="sc-course" value="${parsed.courseName||''}"></div>
+        <div><label>Tee</label><input type="text" class="sc-tee" value="${parsed.teeName||''}"></div>
+        <div><label>Date</label><input type="date" class="sc-date" value="${parsed.date||new Date().toISOString().slice(0,10)}"></div>
+        <div><label>Par</label><input type="number" class="sc-par" value="${parsed.par||72}"></div>
+        <div><label>Rating</label><input type="number" step="0.1" class="sc-rating" value="${parsed.rating||72.0}"></div>
+        <div><label>Slope</label><input type="number" class="sc-slope" value="${parsed.slope||113}"></div>
       </div>
+      <label>Hole-by-hole pars (optional, 18 comma-separated)</label>
+      <input type="text" class="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
+      <p class="section-note" style="margin-bottom:10px;">${needsAttention ? "Rating/slope weren't legible on the card — defaults are filled in, correct them for accurate handicaps." : "Double-check these against the card before saving."}</p>
+      <table>
+        <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>E/B/P if no hole scores</th><th>Assign to</th></tr></thead>
+        <tbody>
+          ${players.map(p=>`
+            <tr>
+              <td><input type="text" class="sc-pname" value="${p.name||''}" style="margin-bottom:0;"></td>
+              <td><input type="number" class="sc-pscore" value="${p.totalScore||''}" style="margin-bottom:0;width:80px;"></td>
+              <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="18 comma-separated"></td>
+              <td style="display:flex;gap:4px;">
+                <input type="number" class="sc-peagles" min="0" value="0" style="margin-bottom:0;width:48px;" title="Eagles">
+                <input type="number" class="sc-pbirdies" min="0" value="0" style="margin-bottom:0;width:48px;" title="Birdies">
+                <input type="number" class="sc-ppars" min="0" value="0" style="margin-bottom:0;width:48px;" title="Pars">
+              </td>
+              <td>
+                <select class="sc-passign" style="margin-bottom:0;">
+                  <option value="">— New player —</option>
+                  ${STATE.players.map(rp=>`<option value="${rp.id}" ${(rp.name && p.name && rp.name.toLowerCase()===p.name.toLowerCase())?'selected':''}>${rp.name}</option>`).join('')}
+                </select>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <button class="btn sc-confirm" style="margin-top:12px;">Save these rounds</button>
     `;
-    document.getElementById('sc-confirm').addEventListener('click', async ()=>{
-      const courseName = document.getElementById('sc-course').value.trim();
+    box.appendChild(wrapper);
+
+    wrapper.querySelector('.sc-confirm').addEventListener('click', async ()=>{
+      const courseName = wrapper.querySelector('.sc-course').value.trim();
       if(!courseName){ showToast('Course name is required'); return; }
-      const date = document.getElementById('sc-date').value;
-      const par = parseFloat(document.getElementById('sc-par').value)||72;
-      const rating = parseFloat(document.getElementById('sc-rating').value)||72;
-      const slope = parseFloat(document.getElementById('sc-slope').value)||113;
-      const holePars = parseNumberList(document.getElementById('sc-holepars').value, 18);
+      const date = wrapper.querySelector('.sc-date').value;
+      const par = parseFloat(wrapper.querySelector('.sc-par').value)||72;
+      const rating = parseFloat(wrapper.querySelector('.sc-rating').value)||72;
+      const slope = parseFloat(wrapper.querySelector('.sc-slope').value)||113;
+      const holePars = parseNumberList(wrapper.querySelector('.sc-holepars').value, 18);
       let course = STATE.courses.find(c=>c.name.toLowerCase()===courseName.toLowerCase());
       if(!course){ course = {id:uid(), name:courseName, par, rating, slope, holePars}; STATE.courses.push(course); }
       else { course.par=par; course.rating=rating; course.slope=slope; if(holePars) course.holePars=holePars; }
       await saveItem(COLLECTIONS.courses, course);
-      const rows = box.querySelectorAll('tbody tr');
+      const rows = wrapper.querySelectorAll('tbody tr');
       let count = 0;
       for(const row of rows){
         const name = row.querySelector('.sc-pname').value.trim();
@@ -840,8 +844,8 @@
         count++;
       }
       showToast(`Saved ${count} round${count===1?'':'s'} from the scorecard`);
-      ACTIVE_TAB = 'rounds';
-      render();
+      wrapper.remove();
+      if(!box.children.length){ ACTIVE_TAB = 'rounds'; render(); }
     });
   }
 
@@ -1015,15 +1019,18 @@
       photoInput.addEventListener('change', ()=>{ extractBtn.disabled = !photoInput.files.length; });
     }
     if(extractBtn) extractBtn.addEventListener('click', async ()=>{
-      const file = photoInput.files[0];
-      if(!file) return;
+      const files = Array.from(photoInput.files || []);
+      if(!files.length) return;
       const statusEl = main.querySelector('#scorecard-status');
       extractBtn.disabled = true;
-      statusEl.innerHTML = `<p class="section-note">Reading the scorecard…</p>`;
-      try{
-        const mediaType = file.type || 'image/jpeg';
-        const base64 = await fileToBase64(file);
-        const prompt = `You are reading a photo of a golf scorecard (could be a paper card or a screenshot from an app like TheGrint). Extract what's visible and respond with ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+      let succeeded = 0, failed = 0;
+      for(let i=0; i<files.length; i++){
+        const file = files[i];
+        statusEl.innerHTML = `<p class="section-note">Reading photo ${i+1} of ${files.length}${files.length>1?` (${file.name})`:''}…</p>`;
+        try{
+          const mediaType = file.type || 'image/jpeg';
+          const base64 = await fileToBase64(file);
+          const prompt = `You are reading a photo of a golf scorecard (could be a paper card or a screenshot from an app like TheGrint). Extract what's visible and respond with ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
 {
   "courseName": string or null,
   "teeName": string or null,
@@ -1035,22 +1042,30 @@
   "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of 18 numbers (that player's per-hole scores) or null if not visible } ]
 }
 If a total score isn't printed but hole-by-hole scores are visible, sum them yourself. List every player column on the card. Use null for anything genuinely not visible or legible — do not guess.`;
-        const data = await callClaudeAPI({
-          model:"claude-sonnet-4-6", max_tokens:1000,
-          messages:[{role:"user", content:[
-            {type:"image", source:{type:"base64", media_type:mediaType, data:base64}},
-            {type:"text", text:prompt}
-          ]}]
-        });
-        if(data.error){ statusEl.innerHTML = `<div class="banner warn">Couldn't read the photo: ${data.error}</div>`; extractBtn.disabled=false; return; }
-        const parsed = extractJSON(extractText(data));
-        if(!parsed){ statusEl.innerHTML = `<div class="banner warn">Couldn't make out a scorecard in that photo — try a clearer or straighter shot.</div>`; extractBtn.disabled=false; return; }
-        statusEl.innerHTML = '';
-        extractBtn.disabled = false;
-        renderScorecardPreview(parsed);
-      }catch(e){
-        statusEl.innerHTML = `<div class="banner warn">Something went wrong reading that photo: ${e.message}</div>`;
-        extractBtn.disabled = false;
+          const data = await callClaudeAPI({
+            model:"claude-sonnet-4-6", max_tokens:1000,
+            messages:[{role:"user", content:[
+              {type:"image", source:{type:"base64", media_type:mediaType, data:base64}},
+              {type:"text", text:prompt}
+            ]}]
+          });
+          if(data.error){ failed++; continue; }
+          const parsed = extractJSON(extractText(data));
+          if(!parsed){ failed++; continue; }
+          renderScorecardPreview(parsed, files.length>1 ? `From: ${file.name}` : null);
+          succeeded++;
+        }catch(e){
+          failed++;
+        }
+      }
+      extractBtn.disabled = false;
+      photoInput.value = '';
+      if(succeeded && !failed){
+        statusEl.innerHTML = `<p class="section-note">Read ${succeeded} scorecard${succeeded===1?'':'s'} — review each below before saving.</p>`;
+      } else if(succeeded && failed){
+        statusEl.innerHTML = `<div class="banner warn">Read ${succeeded} scorecard${succeeded===1?'':'s'}, but couldn't make out ${failed} of them — try clearer or straighter shots for those.</div>`;
+      } else {
+        statusEl.innerHTML = `<div class="banner warn">Couldn't make out a scorecard in ${failed>1?'any of those photos':'that photo'} — try clearer or straighter shots.</div>`;
       }
     });
 
