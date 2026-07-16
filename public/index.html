@@ -342,10 +342,25 @@
 
   // ---------- HOLE-BY-HOLE: pars, birdies, eagles ----------
   function parseNumberList(raw, expectedLen){
-    if(!raw) return null;
-    const parts = String(raw).split(',').map(s=>parseFloat(s.trim())).filter(n=>!isNaN(n));
-    return parts.length===expectedLen ? parts : null;
+    if(raw===undefined || raw===null) return null;
+    const str = String(raw).trim();
+    if(!str) return null;
+    const parts = str.split(',').map(s=>s.trim());
+    if(parts.length !== expectedLen) return null;
+    // Preserve position: a blank or unparseable slot becomes null (that
+    // single hole is simply skipped later) rather than invalidating the
+    // whole 18-hole array over one unclear entry.
+    return parts.map(s=>{
+      if(s==='') return null;
+      const n = parseFloat(s);
+      return isNaN(n) ? null : n;
+    });
   }
+  // Definitions, exact and non-negotiable:
+  //   Par    = hole score − hole par === 0
+  //   Birdie = hole score − hole par === -1
+  //   Eagle  = hole score − hole par <= -2  (covers albatross/condor too)
+  //   Bogey  = +1, Double-or-worse = +2 or more
   function classifyHole(score, par){
     const diff = score - par;
     if(diff <= -2) return 'eagle';
@@ -364,6 +379,22 @@
       stats[c]++;
     });
     return stats;
+  }
+  // Same exact-match classification, applied directly to a freshly-read
+  // scorecard photo (raw per-hole score array vs raw per-hole par array)
+  // rather than to a saved round. Only holes where BOTH the score and the
+  // par were transcribed with confidence are counted — nothing here is
+  // guessed or inferred from markings, only calculated from the numbers.
+  function computeConfirmedCounts(holeScores, holePars){
+    const counts = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0, confirmedHoles:0};
+    if(!Array.isArray(holeScores) || !Array.isArray(holePars)) return counts;
+    for(let i=0; i<18; i++){
+      const s = holeScores[i], p = holePars[i];
+      if(s===null || s===undefined || p===null || p===undefined) continue;
+      counts[classifyHole(s,p)]++;
+      counts.confirmedHoles++;
+    }
+    return counts;
   }
   function playerHoleTally(playerId){
     const totals = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0, roundsWithData:0};
@@ -476,7 +507,7 @@
         <p class="legend">
           Every component below is averaged per round (or per match) played, not summed — so someone who's logged 3 rounds is judged on the same footing as someone with 30, not outranked purely by volume.<br>
           <strong>Score vs Hcp</strong>: average of (course par − net score) across your rounds. Positive means playing better than your handicap predicts.<br>
-          <strong>Pars/Birdies</strong>: average points per round from (8×eagles + 5×birdies + 2×pars) — from hole-by-hole data, or from the manual Eagles/Birdies/Pars counts on a simple score entry.<br>
+          <strong>Pars/Birdies</strong>: average points per round from (8×eagles + 5×birdies + 2×pars). Defined per hole as: par = score equals hole par, birdie = score is exactly 1 under hole par, eagle = score is 2 or more under hole par. Calculated automatically by comparing hole-by-hole scores to hole-by-hole pars (never guessed from markings or color coding) — or entered manually on a simple score entry.<br>
           <strong>H2H</strong>: average points per match from your win-loss-halved record; 3pts per win, 1pt per halved match, 0 for a loss. A simple round with no opponent logged doesn't count as a match either way.<br>
           NH = not enough rounds yet for a handicap index.
         </p>
@@ -777,17 +808,20 @@
       <input type="text" class="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
       <p class="section-note" style="margin-bottom:10px;">${needsAttention ? "Rating/slope weren't legible on the card — defaults are filled in, correct them for accurate handicaps." : "Double-check these against the card before saving."}</p>
       <table>
-        <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>Eagles/Birdies/Pars</th><th>Assign to</th></tr></thead>
+        <thead><tr><th>Detected name</th><th>Score</th><th>Hole scores (optional)</th><th>Eagles / Birdies / Pars</th><th>Assign to</th></tr></thead>
         <tbody>
           ${players.map(p=>`
             <tr>
               <td><input type="text" class="sc-pname" value="${p.name||''}" style="margin-bottom:0;"></td>
               <td><input type="number" class="sc-pscore" value="${p.totalScore||''}" style="margin-bottom:0;width:80px;"></td>
               <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="18 comma-separated"></td>
-              <td style="display:flex;gap:4px;">
-                <input type="number" class="sc-peagles" min="0" value="${p.eagles||0}" style="margin-bottom:0;width:48px;" title="Eagles">
-                <input type="number" class="sc-pbirdies" min="0" value="${p.birdies||0}" style="margin-bottom:0;width:48px;" title="Birdies">
-                <input type="number" class="sc-ppars" min="0" value="${p.pars||0}" style="margin-bottom:0;width:48px;" title="Pars">
+              <td>
+                <div style="display:flex;gap:4px;">
+                  <input type="number" class="sc-peagles" min="0" value="${p.eagles||0}" style="margin-bottom:0;width:48px;" title="Eagles (score 2+ under hole par)">
+                  <input type="number" class="sc-pbirdies" min="0" value="${p.birdies||0}" style="margin-bottom:0;width:48px;" title="Birdies (score 1 under hole par)">
+                  <input type="number" class="sc-ppars" min="0" value="${p.pars||0}" style="margin-bottom:0;width:48px;" title="Pars (score equals hole par)">
+                </div>
+                <p class="section-note" style="margin:2px 0 0;">${p.confirmedHoles ? `Calculated from ${p.confirmedHoles}/18 holes with both score and par read clearly.` : 'Not calculated — hole pars or scores weren\'t both legible. Enter counts manually if you know them.'}</p>
               </td>
               <td>
                 <select class="sc-passign" style="margin-bottom:0;">
@@ -1028,7 +1062,7 @@
         try{
           const mediaType = file.type || 'image/jpeg';
           const base64 = await fileToBase64(file);
-          const prompt = `You are reading a photo of a golf scorecard (could be a paper card or a screenshot from an app like TheGrint). Extract what's visible and respond with ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
+          const prompt = `You are transcribing a photo of a golf scorecard (could be a paper card or a screenshot from an app like TheGrint). Your only job is accurate transcription of what's printed — not judgment or interpretation. Respond with ONLY valid JSON, no markdown fences, no commentary, in exactly this shape:
 {
   "courseName": string or null,
   "teeName": string or null,
@@ -1036,10 +1070,10 @@
   "par": number or null,
   "rating": number or null,
   "slope": number or null,
-  "holePars": array of 18 numbers (the per-hole PAR row) or null if not visible,
-  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of 18 numbers (that player's per-hole scores) or null if not visible, "eagles": number, "birdies": number, "pars": number } ]
+  "holePars": array of exactly 18 entries (numbers, or null for any single hole whose printed par you can't read with certainty) — this is the PAR row, one value per hole, not a total,
+  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of exactly 18 entries (numbers, or null for any single hole whose printed score you can't read with certainty) — one value per hole, not a total } ]
 }
-If a total score isn't printed but hole-by-hole scores are visible, sum them yourself. List every player column on the card. For each player's eagles/birdies/pars counts: work these out by comparing their hole score to that hole's par wherever both are legible, even if you can't read the full 18-hole row for either — partial data is fine, just count what you can confirm. Many scorecard apps also circle, box, or color-code birdies/eagles/bogeys directly on the card (e.g. a circle around a score usually means birdie, a double circle eagle, a square bogey) — use those markings too if hole pars aren't printed. Default eagles/birdies/pars to 0 only if you genuinely found none, not because you're unsure. Use null for course/card fields genuinely not visible or legible — do not guess.`;
+Rules: transcribe only the digits actually printed for each hole — never estimate, infer, or fill in a value you're not confident of; use null for that single hole instead. Ignore any circles, boxes, colors, dots, or other decorative markings on the card entirely — they are not a reliable signal and must not influence what you transcribe. If a total score isn't printed but every hole score for that player is legible, you may sum them. List every player column on the card.`;
           const data = await callClaudeAPI({
             model:"claude-sonnet-4-6", max_tokens:1000,
             messages:[{role:"user", content:[
@@ -1050,6 +1084,17 @@ If a total score isn't printed but hole-by-hole scores are visible, sum them you
           if(data.error){ failed++; continue; }
           const parsed = extractJSON(extractText(data));
           if(!parsed){ failed++; continue; }
+          // Classification happens here, in code, from the transcribed
+          // per-hole numbers only — never from the model's own opinion.
+          if(Array.isArray(parsed.players)){
+            parsed.players.forEach(p=>{
+              const counts = computeConfirmedCounts(p.holeScores, parsed.holePars);
+              p.eagles = counts.eagle;
+              p.birdies = counts.birdie;
+              p.pars = counts.par;
+              p.confirmedHoles = counts.confirmedHoles;
+            });
+          }
           renderScorecardPreview(parsed, files.length>1 ? `From: ${file.name}` : null);
           succeeded++;
         }catch(e){
