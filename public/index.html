@@ -235,43 +235,61 @@
   }
 
   async function fetchCollection(collection){
-    try{
-      const resp = await fetch(`/api/data?collection=${encodeURIComponent(collection)}`);
-      if(!resp.ok) return [];
-      const data = await resp.json();
-      return (data && Array.isArray(data.items)) ? data.items : [];
-    }catch(e){ return []; }
+    for(let attempt=0; attempt<2; attempt++){
+      try{
+        const resp = await fetch(`/api/data?collection=${encodeURIComponent(collection)}`);
+        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        return { items: (data && Array.isArray(data.items)) ? data.items : [], ok:true };
+      }catch(e){
+        if(attempt===1) return { items: [], ok:false };
+      }
+    }
   }
   async function saveItem(collection, item){
-    try{
-      const resp = await fetch('/api/data', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({collection, id:item.id, value:item})
-      });
-      if(!resp.ok){ showToast('Save failed — try again'); return false; }
-      const data = await resp.json();
-      if(!data || !data.ok){ showToast('Save failed — try again'); return false; }
-      return true;
-    }catch(e){ showToast('Save error: '+e.message); return false; }
+    for(let attempt=0; attempt<2; attempt++){
+      try{
+        const resp = await fetch('/api/data', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({collection, id:item.id, value:item})
+        });
+        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if(!data || !data.ok) throw new Error('bad response');
+        return true;
+      }catch(e){
+        if(attempt===1){ showToast('Save failed after retrying — check your connection and try again'); return false; }
+      }
+    }
   }
   async function deleteItem(collection, id){
-    try{
-      const resp = await fetch('/api/data', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({collection, id, deleted:true})
-      });
-      if(!resp.ok){ showToast('Delete failed — try again'); return false; }
-      const data = await resp.json();
-      if(!data || !data.ok){ showToast('Delete failed — try again'); return false; }
-      return true;
-    }catch(e){ showToast('Delete error: '+e.message); return false; }
+    for(let attempt=0; attempt<2; attempt++){
+      try{
+        const resp = await fetch('/api/data', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({collection, id, deleted:true})
+        });
+        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if(!data || !data.ok) throw new Error('bad response');
+        return true;
+      }catch(e){
+        if(attempt===1){ showToast('Delete failed after retrying — check your connection and try again'); return false; }
+      }
+    }
   }
 
   async function loadAll(){
     const [players, courses, rounds, matches] = await Promise.all([
       fetchCollection(COLLECTIONS.players), fetchCollection(COLLECTIONS.courses), fetchCollection(COLLECTIONS.rounds), fetchCollection(COLLECTIONS.matches)
     ]);
-    STATE = {players, courses, rounds, matches, loaded:true};
+    const failedCollections = [
+      !players.ok && 'players', !courses.ok && 'courses', !rounds.ok && 'rounds', !matches.ok && 'matches'
+    ].filter(Boolean);
+    STATE = {
+      players: players.items, courses: courses.items, rounds: rounds.items, matches: matches.items,
+      loaded:true, loadError: failedCollections.length ? failedCollections : null
+    };
     render();
   }
 
@@ -488,6 +506,17 @@
       btn.addEventListener('click', ()=>{ ACTIVE_TAB = btn.dataset.tab; render(); });
     });
     const main = document.getElementById('main');
+    if(STATE.loadError){
+      main.innerHTML = `
+        <div class="banner warn">
+          <strong style="display:block;margin-bottom:4px;">Couldn't load ${STATE.loadError.join(', ')} — showing nothing rather than guessing.</strong>
+          This is a failed connection, not lost data — whatever you'd already saved is very likely still there. Don't re-enter anything until this loads properly, or you may end up with duplicates.
+          <div style="margin-top:10px;"><button class="btn" id="retry-load-btn">Retry loading</button></div>
+        </div>
+      `;
+      document.getElementById('retry-load-btn').addEventListener('click', loadAll);
+      return;
+    }
     if(ACTIVE_TAB==='leaderboard') main.innerHTML = renderLeaderboard();
     if(ACTIVE_TAB==='rounds') main.innerHTML = renderRounds();
     if(ACTIVE_TAB==='h2h') main.innerHTML = renderH2H();
@@ -802,7 +831,13 @@ Madi</textarea>
     const playerOpts = STATE.players.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
     const disabled = STATE.players.length===0;
     return `
-      <div class="section-head"><h2>Import from TheGrint</h2></div>
+      <div class="section-head"><h2>Recover Older Data</h2></div>
+      <div class="banner">If players or rounds you added before a recent update seem to have vanished, they're very likely not deleted — just stored under an old format the app no longer looks at by default. This checks for that and pulls it back in. Safe to click even if there's nothing to find.</div>
+      <div class="card">
+        <button class="btn" id="migrate-btn">Check for older data</button>
+        <div id="migrate-status"></div>
+      </div>
+      <div class="section-head" style="margin-top:22px;"><h2>Import from TheGrint</h2></div>
       <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it. You can also tack on Eagles/Birdies/Pars as three more trailing columns if you know those counts — they feed the Pars &amp; Birdies tally the same way manual entry does.</div>
       <div class="card">
         <form id="import-form">
@@ -1050,6 +1085,43 @@ Madi</textarea>
       }
       showToast(`Added ${added} golfer${added===1?'':'s'}${skipped?`, skipped ${skipped} already on the roster`:''}`);
       render();
+    });
+
+    const migrateBtn = main.querySelector('#migrate-btn');
+    if(migrateBtn) migrateBtn.addEventListener('click', async ()=>{
+      const statusEl = main.querySelector('#migrate-status');
+      migrateBtn.disabled = true;
+      statusEl.innerHTML = `<p class="section-note">Checking for data saved under the old format…</p>`;
+      const legacyMap = { players:'golf:players', courses:'golf:courses', rounds:'golf:rounds', matches:'golf:matches' };
+      let found = 0, migrated = 0, skipped = 0;
+      try{
+        for(const [collection, legacyKey] of Object.entries(legacyMap)){
+          const resp = await fetch(`/api/data?legacyKey=${encodeURIComponent(legacyKey)}`);
+          if(!resp.ok) continue;
+          const data = await resp.json();
+          const arr = data && data.value;
+          if(!Array.isArray(arr) || !arr.length) continue;
+          found += arr.length;
+          const existingIds = new Set(STATE[collection].map(x=>x.id));
+          for(const item of arr){
+            if(!item || !item.id) continue;
+            if(existingIds.has(item.id)){ skipped++; continue; }
+            const ok = await saveItem(collection, item);
+            if(ok) migrated++;
+          }
+        }
+      }catch(e){
+        statusEl.innerHTML = `<div class="banner warn">Something went wrong checking: ${e.message}</div>`;
+        migrateBtn.disabled = false;
+        return;
+      }
+      migrateBtn.disabled = false;
+      if(found===0){
+        statusEl.innerHTML = `<div class="banner">No old-format data found — nothing to recover. If you're still missing something, it may be worth checking the Blobs tab in your Netlify dashboard directly.</div>`;
+      } else {
+        showToast(`Restored ${migrated} record${migrated===1?'':'s'} from before the update`);
+        await loadAll();
+      }
     });
 
     const importForm = main.querySelector('#import-form');
