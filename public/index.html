@@ -279,6 +279,18 @@
     }
   }
 
+  // Adds an item to local state immediately (so the UI feels instant), but
+  // rolls that back if the actual save fails — so a failed save can never
+  // silently look like a success that then disappears on refresh.
+  async function addAndSave(collection, item){
+    STATE[collection].push(item);
+    const ok = await saveItem(collection, item);
+    if(!ok){
+      STATE[collection] = STATE[collection].filter(x=>x.id!==item.id);
+    }
+    return ok;
+  }
+
   async function loadAll(){
     const [players, courses, rounds, matches] = await Promise.all([
       fetchCollection(COLLECTIONS.players), fetchCollection(COLLECTIONS.courses), fetchCollection(COLLECTIONS.rounds), fetchCollection(COLLECTIONS.matches)
@@ -767,7 +779,7 @@
     `;
     document.getElementById('cl-confirm').addEventListener('click', async ()=>{
       const rows = box.querySelectorAll('tbody tr');
-      let count = 0;
+      let count = 0, failed = 0;
       for(const row of rows){
         const name = row.querySelector('.cl-name').value.trim();
         if(!name) continue;
@@ -777,13 +789,19 @@
         const rating = ratingVal ? parseFloat(ratingVal) : par;
         const slope = slopeVal ? parseFloat(slopeVal) : 113;
         const existing = STATE.courses.find(c=>c.name.toLowerCase()===name.toLowerCase());
-        let course;
-        if(existing){ existing.par=par; existing.rating=rating; existing.slope=slope; course=existing; }
-        else{ course = {id:uid(), name, par, rating, slope}; STATE.courses.push(course); }
-        await saveItem(COLLECTIONS.courses, course);
-        count++;
+        let ok;
+        if(existing){
+          const prev = {par:existing.par, rating:existing.rating, slope:existing.slope};
+          existing.par=par; existing.rating=rating; existing.slope=slope;
+          ok = await saveItem(COLLECTIONS.courses, existing);
+          if(!ok) Object.assign(existing, prev);
+        } else {
+          const course = {id:uid(), name, par, rating, slope};
+          ok = await addAndSave(COLLECTIONS.courses, course);
+        }
+        if(ok) count++; else failed++;
       }
-      showToast(`Added/updated ${count} course${count===1?'':'s'}`);
+      showToast(`Added/updated ${count} course${count===1?'':'s'}${failed?`, ${failed} failed`:''}`);
       ACTIVE_TAB = 'courses';
       render();
     });
@@ -921,11 +939,19 @@ Madi</textarea>
       const slope = parseFloat(wrapper.querySelector('.sc-slope').value)||113;
       const holePars = parseNumberList(wrapper.querySelector('.sc-holepars').value, 18);
       let course = STATE.courses.find(c=>c.name.toLowerCase()===courseName.toLowerCase());
-      if(!course){ course = {id:uid(), name:courseName, par, rating, slope, holePars}; STATE.courses.push(course); }
-      else { course.par=par; course.rating=rating; course.slope=slope; if(holePars) course.holePars=holePars; }
-      await saveItem(COLLECTIONS.courses, course);
+      let courseOk;
+      if(!course){
+        course = {id:uid(), name:courseName, par, rating, slope, holePars};
+        courseOk = await addAndSave(COLLECTIONS.courses, course);
+      } else {
+        const prev = {par:course.par, rating:course.rating, slope:course.slope, holePars:course.holePars};
+        course.par=par; course.rating=rating; course.slope=slope; if(holePars) course.holePars=holePars;
+        courseOk = await saveItem(COLLECTIONS.courses, course);
+        if(!courseOk) Object.assign(course, prev);
+      }
+      if(!courseOk){ showToast('Course failed to save — nothing else was saved either'); render(); return; }
       const rows = wrapper.querySelectorAll('tbody tr');
-      let count = 0;
+      let count = 0, failed = 0;
       for(const row of rows){
         const name = row.querySelector('.sc-pname').value.trim();
         const scoreVal = row.querySelector('.sc-pscore').value;
@@ -935,8 +961,8 @@ Madi</textarea>
         let playerId = assign;
         if(!playerId){
           const newP = {id:uid(), name};
-          STATE.players.push(newP);
-          await saveItem(COLLECTIONS.players, newP);
+          const playerOk = await addAndSave(COLLECTIONS.players, newP);
+          if(!playerOk){ failed++; continue; }
           playerId = newP.id;
         }
         const gross = parseFloat(scoreVal);
@@ -946,11 +972,10 @@ Madi</textarea>
         const manualPars = parseInt(row.querySelector('.sc-ppars').value)||0;
         const differential = computeDifferential(gross, course.rating, course.slope);
         const newRound = {id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, differential, holeScores, manualEagles, manualBirdies, manualPars};
-        STATE.rounds.push(newRound);
-        await saveItem(COLLECTIONS.rounds, newRound);
-        count++;
+        const ok = await addAndSave(COLLECTIONS.rounds, newRound);
+        if(ok) count++; else failed++;
       }
-      showToast(`Saved ${count} round${count===1?'':'s'} from the scorecard`);
+      showToast(`Saved ${count} round${count===1?'':'s'} from the scorecard${failed?`, ${failed} failed`:''}`);
       wrapper.remove();
       if(!box.children.length){ ACTIVE_TAB = 'rounds'; render(); }
     });
@@ -981,23 +1006,23 @@ Madi</textarea>
       const manualBirdies = parseInt(fd.get('manualBirdies'))||0;
       const manualPars = parseInt(fd.get('manualPars'))||0;
       const newRound = {id:uid(), playerId, courseId, courseName:c.name, date, gross, differential, holeScores, manualEagles, manualBirdies, manualPars};
-      STATE.rounds.push(newRound);
-      await saveItem(COLLECTIONS.rounds, newRound);
+      const roundOk = await addAndSave(COLLECTIONS.rounds, newRound);
+      if(!roundOk){ render(); return; }
 
       if(opponentId){
         const oGross = parseFloat(opponentGrossVal);
         const oDiff = computeDifferential(oGross, c.rating, c.slope);
         const opponentRound = {id:uid(), playerId:opponentId, courseId, courseName:c.name, date, gross:oGross, differential:oDiff, holeScores:null, manualEagles:0, manualBirdies:0, manualPars:0};
-        STATE.rounds.push(opponentRound);
-        await saveItem(COLLECTIONS.rounds, opponentRound);
+        const opponentOk = await addAndSave(COLLECTIONS.rounds, opponentRound);
+        if(!opponentOk){ showToast('Your round saved, but the opponent round failed — no match was logged'); render(); return; }
         const idxA = computeHandicapIndex(playerId);
         const idxB = computeHandicapIndex(opponentId);
         const netA = gross - (idxA||0);
         const netB = oGross - (idxB||0);
         const winnerId = netA<netB ? playerId : (netB<netA ? opponentId : null);
         const newMatch = {id:uid(), players:[playerId, opponentId], format:'Stroke play (from round)', date, winnerId, stakes:fd.get('stakes')||''};
-        STATE.matches.push(newMatch);
-        await saveItem(COLLECTIONS.matches, newMatch);
+        const matchOk = await addAndSave(COLLECTIONS.matches, newMatch);
+        if(!matchOk){ showToast('Both rounds saved, but the match record failed to save'); render(); return; }
       }
       showToast(opponentId ? 'Round + head-to-head logged' : 'Round logged');
       render();
@@ -1017,9 +1042,8 @@ Madi</textarea>
       const a = fd.get('a'), b = fd.get('b');
       if(a===b){ showToast('Pick two different players'); return; }
       const newMatch = {id:uid(), players:[a,b], format:fd.get('format'), date:fd.get('date'), winnerId:fd.get('winnerId')||null, stakes:fd.get('stakes')};
-      STATE.matches.push(newMatch);
-      await saveItem(COLLECTIONS.matches, newMatch);
-      showToast('Match logged');
+      const ok = await addAndSave(COLLECTIONS.matches, newMatch);
+      if(ok) showToast('Match logged');
       render();
     });
 
@@ -1036,9 +1060,8 @@ Madi</textarea>
       const fd = new FormData(courseForm);
       const holePars = parseNumberList(fd.get('holePars'), 18);
       const newCourse = {id:uid(), name:fd.get('name'), par:parseFloat(fd.get('par')), rating:parseFloat(fd.get('rating')), slope:parseFloat(fd.get('slope')), holePars};
-      STATE.courses.push(newCourse);
-      await saveItem(COLLECTIONS.courses, newCourse);
-      showToast('Course added');
+      const ok = await addAndSave(COLLECTIONS.courses, newCourse);
+      if(ok) showToast('Course added');
       render();
     });
 
@@ -1056,9 +1079,8 @@ Madi</textarea>
       const name = fd.get('name').trim();
       if(!name) return;
       const newPlayer = {id:uid(), name};
-      STATE.players.push(newPlayer);
-      await saveItem(COLLECTIONS.players, newPlayer);
-      showToast('Golfer added');
+      const ok = await addAndSave(COLLECTIONS.players, newPlayer);
+      if(ok) showToast('Golfer added');
       render();
     });
 
@@ -1074,16 +1096,15 @@ Madi</textarea>
       const raw = main.querySelector('#bulk-player-input').value;
       const names = raw.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
       if(!names.length) return;
-      let added = 0, skipped = 0;
+      let added = 0, skipped = 0, failed = 0;
       for(const name of names){
         const exists = STATE.players.find(p=>p.name.toLowerCase()===name.toLowerCase());
         if(exists){ skipped++; continue; }
         const newPlayer = {id:uid(), name};
-        STATE.players.push(newPlayer);
-        await saveItem(COLLECTIONS.players, newPlayer);
-        added++;
+        const ok = await addAndSave(COLLECTIONS.players, newPlayer);
+        if(ok) added++; else failed++;
       }
-      showToast(`Added ${added} golfer${added===1?'':'s'}${skipped?`, skipped ${skipped} already on the roster`:''}`);
+      showToast(`Added ${added} golfer${added===1?'':'s'}${skipped?`, skipped ${skipped} already on the roster`:''}${failed?`, ${failed} failed to save`:''}`);
       render();
     });
 
@@ -1155,20 +1176,21 @@ Madi</textarea>
         <button class="btn" id="confirm-import" style="margin-top:12px;">Confirm import</button>
       `;
       document.getElementById('confirm-import').addEventListener('click', async ()=>{
+        let imported = 0, failed = 0;
         for(const row of parsed){
           let c = STATE.courses.find(c=>c.name.toLowerCase()===row.course.toLowerCase());
           if(!c){
             c = {id:uid(), name:row.course, par:row.par, rating:row.rating, slope:row.slope};
-            STATE.courses.push(c);
-            await saveItem(COLLECTIONS.courses, c);
+            const courseOk = await addAndSave(COLLECTIONS.courses, c);
+            if(!courseOk){ failed++; continue; }
           }
           const differential = computeDifferential(row.score, c.rating, c.slope);
           const newRound = {id:uid(), playerId, courseId:c.id, courseName:c.name, date:row.date, gross:row.score, differential,
             manualEagles:row.eagles, manualBirdies:row.birdies, manualPars:row.pars};
-          STATE.rounds.push(newRound);
-          await saveItem(COLLECTIONS.rounds, newRound);
+          const ok = await addAndSave(COLLECTIONS.rounds, newRound);
+          if(ok) imported++; else failed++;
         }
-        showToast(`Imported ${parsed.length} rounds`);
+        showToast(`Imported ${imported} round${imported===1?'':'s'}${failed?`, ${failed} failed to save`:''}`);
         ACTIVE_TAB = 'rounds';
         render();
       });
