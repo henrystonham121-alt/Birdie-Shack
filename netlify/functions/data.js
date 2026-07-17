@@ -1,12 +1,27 @@
 const { getStore } = require("@netlify/blobs");
 
+// In most Netlify deployments, getStore("name") auto-detects the site
+// context. Some deployment setups don't reliably inject that context into
+// Functions, producing "MissingBlobsEnvironmentError" even though everything
+// else is configured correctly. If BLOBS_SITE_ID and BLOBS_TOKEN are set as
+// environment variables, we use those explicitly instead of relying on
+// auto-detection — this works unconditionally.
+function getGrindhouseStore() {
+  const siteID = process.env.BLOBS_SITE_ID;
+  const token = process.env.BLOBS_TOKEN;
+  if (siteID && token) {
+    return getStore({ name: "grindhouse", siteID, token });
+  }
+  return getStore("grindhouse");
+}
+
 // Per-record storage: every player/course/round/match lives at its own key
 // (`<collection>:<id>`), so writing one record can never overwrite anyone
 // else's data. GET lists a whole collection; POST upserts or deletes one
 // record at a time.
 exports.handler = async (event) => {
   try {
-    const store = getStore("grindhouse");
+    const store = getGrindhouseStore();
 
     if (event.httpMethod === "GET") {
       const legacyKey = event.queryStringParameters && event.queryStringParameters.legacyKey;
