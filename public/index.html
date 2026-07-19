@@ -540,6 +540,13 @@
   function computeDifferential(gross, rating, slope){
     return Math.round(((113/(slope||113))*(gross-rating))*10)/10;
   }
+  // Sanity bound for an 18-hole gross score. Mirrors the manual round
+  // form's min/max so scorecard photo reads and bulk pastes can't sneak
+  // in a partial-round or misparsed number (e.g. a front-9 subtotal)
+  // as if it were a full round.
+  function isPlausibleGross(g){
+    return typeof g === 'number' && !isNaN(g) && g >= 50 && g <= 150;
+  }
   function computeHandicapIndex(playerId){
     const rs = STATE.rounds.filter(r=>r.playerId===playerId)
       .sort((a,b)=> new Date(b.date)-new Date(a.date))
@@ -847,7 +854,7 @@
           <label>Head-to-head opponent (optional)</label>
           <select name="opponentId"><option value="">— None, just a simple score —</option>${playerOpts}</select>
           <div class="form-grid">
-            <div><label>Opponent's gross score</label><input type="number" name="opponentGross" placeholder="only if opponent selected above"></div>
+            <div><label>Opponent's gross score</label><input type="number" name="opponentGross" min="50" max="150" placeholder="only if opponent selected above"></div>
             <div><label>Stakes (optional)</label><input type="text" name="stakes" placeholder="e.g. Loser buys the first round"></div>
           </div>
           <p class="section-note" style="margin:-6px 0 14px;">Leave the opponent blank for a simple score entry — no head-to-head points without an opponent logged here or in the Head-to-Head tab.</p>
@@ -1231,6 +1238,11 @@ Madi</textarea>
           playerId = newP.id;
         }
         const gross = parseFloat(scoreVal);
+        if(!isPlausibleGross(gross)){
+          showToast(`Skipped ${name} — "${scoreVal}" doesn't look like a full 18-hole score (50–150)`);
+          failed++;
+          continue;
+        }
         const holeScores = parseNumberList(holesRaw, 18);
         const manualEagles = parseInt(row.querySelector('.sc-peagles').value)||0;
         const manualBirdies = parseInt(row.querySelector('.sc-pbirdies').value)||0;
@@ -1257,10 +1269,18 @@ Madi</textarea>
       const courseId = fd.get('courseId');
       const c = courseById(courseId);
       const gross = parseFloat(fd.get('gross'));
+      if(!isPlausibleGross(gross)){
+        showToast('Gross score should be a full 18-hole total (50–150)');
+        return;
+      }
       const opponentId = fd.get('opponentId');
       const opponentGrossVal = fd.get('opponentGross');
       if(opponentId && !opponentGrossVal){
         showToast("Add the opponent's score, or clear the opponent for a simple entry");
+        return;
+      }
+      if(opponentId && !isPlausibleGross(parseFloat(opponentGrossVal))){
+        showToast("Opponent's score should be a full 18-hole total (50–150)");
         return;
       }
       const playerId = fd.get('playerId');
@@ -1433,20 +1453,24 @@ Madi</textarea>
         };
       }).filter(r=> r.course && !isNaN(r.score));
 
+      const implausible = parsed.filter(r=> !isPlausibleGross(r.score));
+      const valid = parsed.filter(r=> isPlausibleGross(r.score));
+
       const preview = document.getElementById('import-preview');
-      if(parsed.length===0){
-        preview.innerHTML = `<div class="banner warn">Couldn't parse any rows — check the format and try again.</div>`;
+      if(valid.length===0){
+        preview.innerHTML = `<div class="banner warn">Couldn't parse any rows with a plausible 18-hole score (50–150) — check the format and try again.</div>`;
         return;
       }
       preview.innerHTML = `
-        <div class="banner">Found ${parsed.length} round${parsed.length===1?'':'s'} for ${playerName(playerId)}. Review, then confirm.</div>
+        ${implausible.length ? `<div class="banner warn">Skipped ${implausible.length} row${implausible.length===1?'':'s'} with an unlikely score (not 50–150) — check those lines against the source and re-paste separately if they're genuine.</div>` : ''}
+        <div class="banner">Found ${valid.length} round${valid.length===1?'':'s'} for ${playerName(playerId)}. Review, then confirm.</div>
         <table><thead><tr><th>Date</th><th>Course</th><th>Tees</th><th>Score</th><th>Rating</th><th>Slope</th><th>E/B/P</th></tr></thead>
-        <tbody>${parsed.map(p=>`<tr><td class="mono">${p.date}</td><td>${p.course}</td><td>${p.tees}</td><td class="mono">${p.score}</td><td class="mono">${p.rating}</td><td class="mono">${p.slope}</td><td class="mono">${p.eagles}/${p.birdies}/${p.pars}</td></tr>`).join('')}</tbody></table>
+        <tbody>${valid.map(p=>`<tr><td class="mono">${p.date}</td><td>${p.course}</td><td>${p.tees}</td><td class="mono">${p.score}</td><td class="mono">${p.rating}</td><td class="mono">${p.slope}</td><td class="mono">${p.eagles}/${p.birdies}/${p.pars}</td></tr>`).join('')}</tbody></table>
         <button class="btn" id="confirm-import" style="margin-top:12px;">Confirm import</button>
       `;
       document.getElementById('confirm-import').addEventListener('click', async ()=>{
         let imported = 0, failed = 0;
-        for(const row of parsed){
+        for(const row of valid){
           let c = STATE.courses.find(c=>c.name.toLowerCase()===row.course.toLowerCase());
           if(!c){
             c = {id:uid(), name:row.course, par:row.par, rating:row.rating, slope:row.slope};
