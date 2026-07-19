@@ -540,15 +540,19 @@
   function computeDifferential(gross, rating, slope){
     return Math.round(((113/(slope||113))*(gross-rating))*10)/10;
   }
-  // Sanity bound for an 18-hole gross score. Mirrors the manual round
-  // form's min/max so scorecard photo reads and bulk pastes can't sneak
-  // in a partial-round or misparsed number (e.g. a front-9 subtotal)
-  // as if it were a full round.
-  function isPlausibleGross(g){
-    return typeof g === 'number' && !isNaN(g) && g >= 50 && g <= 150;
+  // Sanity bound for a gross score, scaled to how many holes were played.
+  // Mirrors the manual round form's min/max so scorecard photo reads and
+  // bulk pastes can't sneak in a misparsed number as if it were a full round.
+  function isPlausibleGross(g, holes){
+    if(typeof g !== 'number' || isNaN(g)) return false;
+    if(holes === 9) return g >= 20 && g <= 90;
+    return g >= 50 && g <= 150; // 18-hole (default)
   }
+  // Rounds without a stored `holes` value predate 9-hole support and were
+  // always full 18-hole rounds, so they default to 18 here.
+  function is18HoleRound(r){ return (r.holes || 18) === 18; }
   function computeHandicapIndex(playerId){
-    const rs = STATE.rounds.filter(r=>r.playerId===playerId)
+    const rs = STATE.rounds.filter(r=>r.playerId===playerId && is18HoleRound(r))
       .sort((a,b)=> new Date(b.date)-new Date(a.date))
       .slice(0,20);
     if(rs.length===0) return null;
@@ -628,7 +632,7 @@
   // overall. Requires at least 2 rounds at the course to count as meaningful.
   function courseChampion(courseId){
     const byPlayer = {};
-    STATE.rounds.filter(r=>r.courseId===courseId).forEach(r=>{
+    STATE.rounds.filter(r=>r.courseId===courseId && is18HoleRound(r)).forEach(r=>{
       (byPlayer[r.playerId] = byPlayer[r.playerId]||[]).push(r);
     });
     let best = null;
@@ -678,6 +682,7 @@
   function buildLeaderboard(){
     return STATE.players.map(p=>{
       const rounds = STATE.rounds.filter(r=>r.playerId===p.id);
+      const rounds18 = rounds.filter(is18HoleRound);
       const idx = computeHandicapIndex(p.id);
       const matches = STATE.matches.filter(m=>m.players.includes(p.id));
       const wins = matches.filter(m=>m.winnerId===p.id).length;
@@ -685,9 +690,9 @@
       const halvedCount = matches.filter(m=>!m.winnerId).length;
       let bestNet = null;
       let scoreVsHcpTotal = 0;
-      if(rounds.length && idx!==null){
-        bestNet = Math.min(...rounds.map(r=>Math.round(r.gross - idx)));
-        rounds.forEach(r=>{
+      if(rounds18.length && idx!==null){
+        bestNet = Math.min(...rounds18.map(r=>Math.round(r.gross - idx)));
+        rounds18.forEach(r=>{
           const course = courseById(r.courseId);
           if(course) scoreVsHcpTotal += Math.round(course.par - (r.gross - idx));
         });
@@ -698,7 +703,10 @@
 
       // Averaged per round/match played, so a player with 3 rounds isn't
       // outranked purely by someone who's logged 30 — volume doesn't buy points.
-      const scoreVsHcpAvg = rounds.length ? Math.round((scoreVsHcpTotal/rounds.length)*10)/10 : 0;
+      // Score-vs-handicap is averaged over 18-hole rounds only, since that's
+      // the only pool it was computed from; pars/birdies still count every
+      // round played, 9-hole included.
+      const scoreVsHcpAvg = rounds18.length ? Math.round((scoreVsHcpTotal/rounds18.length)*10)/10 : 0;
       const parsBirdiesAvg = rounds.length ? Math.round((parsBirdiesTotal/rounds.length)*10)/10 : 0;
       const h2hAvg = totalMatches ? Math.round(((wins*3 + halvedCount*1)/totalMatches)*10)/10 : 0;
       const performanceScore = Math.round((scoreVsHcpAvg + parsBirdiesAvg + h2hAvg)*10)/10;
@@ -840,8 +848,10 @@
             <div><label>Player</label><select name="playerId" required ${disabled?'disabled':''}>${playerOpts||'<option value="">Add a player first</option>'}</select></div>
             <div><label>Course</label><select name="courseId" required ${disabled?'disabled':''}>${courseOpts||'<option value="">Add a course first</option>'}</select></div>
             <div><label>Date</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}" required></div>
-            <div><label>Gross score</label><input type="number" name="gross" min="50" max="150" placeholder="e.g. 88" required></div>
+            <div><label>Holes played</label><select name="holes"><option value="18" selected>18 holes</option><option value="9">9 holes</option></select></div>
+            <div><label>Gross score</label><input type="number" name="gross" min="20" max="150" placeholder="e.g. 88" required></div>
           </div>
+          <p class="section-note" style="margin:-6px 0 14px;">9-hole rounds count toward rounds played and pars/birdies, but are left out of handicap and best-score calculations, which need a full 18-hole card.</p>
           <label>Hole-by-hole scores (optional — 18 numbers, comma-separated)</label>
           <input type="text" name="holeScores" placeholder="6,5,5,4,5,5,5,4,6,4,5,6,2,5,4,4,6,7">
           <p class="section-note" style="margin:-6px 0 14px;">Adding these (and hole pars on the course) feeds the Pars &amp; Birdies tally automatically. If you're just entering a total score, use the counts below instead.</p>
@@ -854,7 +864,7 @@
           <label>Head-to-head opponent (optional)</label>
           <select name="opponentId"><option value="">— None, just a simple score —</option>${playerOpts}</select>
           <div class="form-grid">
-            <div><label>Opponent's gross score</label><input type="number" name="opponentGross" min="50" max="150" placeholder="only if opponent selected above"></div>
+            <div><label>Opponent's gross score</label><input type="number" name="opponentGross" min="20" max="150" placeholder="only if opponent selected above"></div>
             <div><label>Stakes (optional)</label><input type="text" name="stakes" placeholder="e.g. Loser buys the first round"></div>
           </div>
           <p class="section-note" style="margin:-6px 0 14px;">Leave the opponent blank for a simple score entry — no head-to-head points without an opponent logged here or in the Head-to-Head tab.</p>
@@ -865,17 +875,19 @@
       ${rounds.length===0 ? `<div class="empty"><strong>No rounds logged</strong>Log one above, or bring in history via the Import tab.</div>` : `
       <div class="card">
         <table>
-          <thead><tr><th>Date</th><th>Player</th><th>Course</th><th>Gross</th><th>Diff.</th><th>Holes?</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Player</th><th>Course</th><th>Holes</th><th>Gross</th><th>Diff.</th><th>Card</th><th></th></tr></thead>
           <tbody>
             ${rounds.map(r=>{
               const c = courseById(r.courseId);
               const toPar = c ? r.gross - c.par : null;
+              const holesN = r.holes || 18;
               return `<tr>
                 <td class="mono">${r.date}</td>
                 <td>${avatarImg(playerName(r.playerId))}${playerName(r.playerId)}</td>
                 <td>${r.courseName || courseName(r.courseId)}</td>
+                <td class="mono">${holesN}${holesN===9?' <span class="pill">9-hole</span>':''}</td>
                 <td class="mono">${r.gross}${toPar!==null?` <span class="pill ${toPar>0?'over':(toPar<0?'under':'')}">${toPar>0?'+':''}${toPar}</span>`:''}</td>
-                <td class="mono">${r.differential}</td>
+                <td class="mono">${is18HoleRound(r) ? r.differential : '—'}</td>
                 <td class="mono">${r.holeScores?'✓':'—'}</td>
                 <td><button class="btn ghost small" data-delround="${r.id}">Remove</button></td>
               </tr>`;
@@ -1071,7 +1083,8 @@ Madi</textarea>
     if(!p) return '';
     const idx = computeHandicapIndex(playerId);
     const rounds = STATE.rounds.filter(r=>r.playerId===playerId);
-    const bestScore = rounds.length ? Math.min(...rounds.map(r=>r.gross)) : null;
+    const rounds18 = rounds.filter(is18HoleRound);
+    const bestScore = rounds18.length ? Math.min(...rounds18.map(r=>r.gross)) : null;
     const tally = playerHoleTally(playerId);
     const fav = favouriteCourse(playerId);
     return `
@@ -1128,7 +1141,7 @@ Madi</textarea>
         <div id="migrate-status"></div>
       </div>
       <div class="section-head" style="margin-top:22px;"><h2>Import from TheGrint</h2></div>
-      <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it. You can also tack on Eagles/Birdies/Pars as three more trailing columns if you know those counts — they feed the Pars &amp; Birdies tally the same way manual entry does.</div>
+      <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it. You can also tack on Eagles/Birdies/Pars as three more trailing columns if you know those counts, then a final <strong>Holes</strong> column (9 or 18) if any rows are 9-hole rounds — otherwise every row is assumed to be a full 18 holes. 9-hole rounds are kept out of handicap and best-score calculations.</div>
       <div class="card">
         <form id="import-form">
           <label>Which player is this scoring history for?</label>
@@ -1168,6 +1181,7 @@ Madi</textarea>
         <div><label>Par</label><input type="number" class="sc-par" value="${parsed.par||72}"></div>
         <div><label>Rating</label><input type="number" step="0.1" class="sc-rating" value="${parsed.rating||72.0}"></div>
         <div><label>Slope</label><input type="number" class="sc-slope" value="${parsed.slope||113}"></div>
+        <div><label>Holes played</label><select class="sc-holes"><option value="18" selected>18 holes</option><option value="9">9 holes</option></select></div>
       </div>
       <label>Hole-by-hole pars (optional, 18 comma-separated)</label>
       <input type="text" class="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
@@ -1210,6 +1224,7 @@ Madi</textarea>
       const rating = parseFloat(wrapper.querySelector('.sc-rating').value)||72;
       const slope = parseFloat(wrapper.querySelector('.sc-slope').value)||113;
       const holePars = parseNumberList(wrapper.querySelector('.sc-holepars').value, 18);
+      const holes = wrapper.querySelector('.sc-holes').value === '9' ? 9 : 18;
       let course = STATE.courses.find(c=>c.name.toLowerCase()===courseName.toLowerCase());
       let courseOk;
       if(!course){
@@ -1238,8 +1253,8 @@ Madi</textarea>
           playerId = newP.id;
         }
         const gross = parseFloat(scoreVal);
-        if(!isPlausibleGross(gross)){
-          showToast(`Skipped ${name} — "${scoreVal}" doesn't look like a full 18-hole score (50–150)`);
+        if(!isPlausibleGross(gross, holes)){
+          showToast(`Skipped ${name} — "${scoreVal}" doesn't look like a ${holes}-hole score (${holes===9?'20–90':'50–150'})`);
           failed++;
           continue;
         }
@@ -1248,7 +1263,7 @@ Madi</textarea>
         const manualBirdies = parseInt(row.querySelector('.sc-pbirdies').value)||0;
         const manualPars = parseInt(row.querySelector('.sc-ppars').value)||0;
         const differential = computeDifferential(gross, course.rating, course.slope);
-        const newRound = {id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, differential, holeScores, manualEagles, manualBirdies, manualPars};
+        const newRound = {id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, holes, differential, holeScores, manualEagles, manualBirdies, manualPars};
         const ok = await addAndSave(COLLECTIONS.rounds, newRound);
         if(ok) count++; else failed++;
       }
@@ -1269,8 +1284,9 @@ Madi</textarea>
       const courseId = fd.get('courseId');
       const c = courseById(courseId);
       const gross = parseFloat(fd.get('gross'));
-      if(!isPlausibleGross(gross)){
-        showToast('Gross score should be a full 18-hole total (50–150)');
+      const holes = parseInt(fd.get('holes')) === 9 ? 9 : 18;
+      if(!isPlausibleGross(gross, holes)){
+        showToast(holes===9 ? 'Gross score should be a 9-hole total (20–90)' : 'Gross score should be a full 18-hole total (50–150)');
         return;
       }
       const opponentId = fd.get('opponentId');
@@ -1279,8 +1295,8 @@ Madi</textarea>
         showToast("Add the opponent's score, or clear the opponent for a simple entry");
         return;
       }
-      if(opponentId && !isPlausibleGross(parseFloat(opponentGrossVal))){
-        showToast("Opponent's score should be a full 18-hole total (50–150)");
+      if(opponentId && !isPlausibleGross(parseFloat(opponentGrossVal), holes)){
+        showToast(holes===9 ? "Opponent's score should be a 9-hole total (20–90)" : "Opponent's score should be a full 18-hole total (50–150)");
         return;
       }
       const playerId = fd.get('playerId');
@@ -1290,14 +1306,14 @@ Madi</textarea>
       const manualEagles = parseInt(fd.get('manualEagles'))||0;
       const manualBirdies = parseInt(fd.get('manualBirdies'))||0;
       const manualPars = parseInt(fd.get('manualPars'))||0;
-      const newRound = {id:uid(), playerId, courseId, courseName:c.name, date, gross, differential, holeScores, manualEagles, manualBirdies, manualPars};
+      const newRound = {id:uid(), playerId, courseId, courseName:c.name, date, gross, holes, differential, holeScores, manualEagles, manualBirdies, manualPars};
       const roundOk = await addAndSave(COLLECTIONS.rounds, newRound);
       if(!roundOk){ render(); return; }
 
       if(opponentId){
         const oGross = parseFloat(opponentGrossVal);
         const oDiff = computeDifferential(oGross, c.rating, c.slope);
-        const opponentRound = {id:uid(), playerId:opponentId, courseId, courseName:c.name, date, gross:oGross, differential:oDiff, holeScores:null, manualEagles:0, manualBirdies:0, manualPars:0};
+        const opponentRound = {id:uid(), playerId:opponentId, courseId, courseName:c.name, date, gross:oGross, holes, differential:oDiff, holeScores:null, manualEagles:0, manualBirdies:0, manualPars:0};
         const opponentOk = await addAndSave(COLLECTIONS.rounds, opponentRound);
         if(!opponentOk){ showToast('Your round saved, but the opponent round failed — no match was logged'); render(); return; }
         const idxA = computeHandicapIndex(playerId);
@@ -1445,27 +1461,28 @@ Madi</textarea>
       const parsed = lines.map(line=>{
         const delim = line.includes('\t') ? '\t' : ',';
         const cols = line.split(delim).map(s=>s.trim());
-        const [date, course, tees, score, rating, slope, par, eagles, birdies, pars] = cols;
+        const [date, course, tees, score, rating, slope, par, eagles, birdies, pars, holes] = cols;
         return {
           date: date, course: course, tees: tees||'', score: parseFloat(score),
           rating: rating?parseFloat(rating):72.0, slope: slope?parseFloat(slope):113, par: par?parseFloat(par):72,
-          eagles: eagles?parseInt(eagles):0, birdies: birdies?parseInt(birdies):0, pars: pars?parseInt(pars):0
+          eagles: eagles?parseInt(eagles):0, birdies: birdies?parseInt(birdies):0, pars: pars?parseInt(pars):0,
+          holes: parseInt(holes)===9 ? 9 : 18
         };
       }).filter(r=> r.course && !isNaN(r.score));
 
-      const implausible = parsed.filter(r=> !isPlausibleGross(r.score));
-      const valid = parsed.filter(r=> isPlausibleGross(r.score));
+      const implausible = parsed.filter(r=> !isPlausibleGross(r.score, r.holes));
+      const valid = parsed.filter(r=> isPlausibleGross(r.score, r.holes));
 
       const preview = document.getElementById('import-preview');
       if(valid.length===0){
-        preview.innerHTML = `<div class="banner warn">Couldn't parse any rows with a plausible 18-hole score (50–150) — check the format and try again.</div>`;
+        preview.innerHTML = `<div class="banner warn">Couldn't parse any rows with a plausible score for their hole count — check the format and try again.</div>`;
         return;
       }
       preview.innerHTML = `
-        ${implausible.length ? `<div class="banner warn">Skipped ${implausible.length} row${implausible.length===1?'':'s'} with an unlikely score (not 50–150) — check those lines against the source and re-paste separately if they're genuine.</div>` : ''}
+        ${implausible.length ? `<div class="banner warn">Skipped ${implausible.length} row${implausible.length===1?'':'s'} with an unlikely score for the stated hole count — check those lines against the source and re-paste separately if they're genuine.</div>` : ''}
         <div class="banner">Found ${valid.length} round${valid.length===1?'':'s'} for ${playerName(playerId)}. Review, then confirm.</div>
-        <table><thead><tr><th>Date</th><th>Course</th><th>Tees</th><th>Score</th><th>Rating</th><th>Slope</th><th>E/B/P</th></tr></thead>
-        <tbody>${valid.map(p=>`<tr><td class="mono">${p.date}</td><td>${p.course}</td><td>${p.tees}</td><td class="mono">${p.score}</td><td class="mono">${p.rating}</td><td class="mono">${p.slope}</td><td class="mono">${p.eagles}/${p.birdies}/${p.pars}</td></tr>`).join('')}</tbody></table>
+        <table><thead><tr><th>Date</th><th>Course</th><th>Tees</th><th>Holes</th><th>Score</th><th>Rating</th><th>Slope</th><th>E/B/P</th></tr></thead>
+        <tbody>${valid.map(p=>`<tr><td class="mono">${p.date}</td><td>${p.course}</td><td>${p.tees}</td><td class="mono">${p.holes}</td><td class="mono">${p.score}</td><td class="mono">${p.rating}</td><td class="mono">${p.slope}</td><td class="mono">${p.eagles}/${p.birdies}/${p.pars}</td></tr>`).join('')}</tbody></table>
         <button class="btn" id="confirm-import" style="margin-top:12px;">Confirm import</button>
       `;
       document.getElementById('confirm-import').addEventListener('click', async ()=>{
@@ -1478,7 +1495,7 @@ Madi</textarea>
             if(!courseOk){ failed++; continue; }
           }
           const differential = computeDifferential(row.score, c.rating, c.slope);
-          const newRound = {id:uid(), playerId, courseId:c.id, courseName:c.name, date:row.date, gross:row.score, differential,
+          const newRound = {id:uid(), playerId, courseId:c.id, courseName:c.name, date:row.date, gross:row.score, holes:row.holes, differential,
             manualEagles:row.eagles, manualBirdies:row.birdies, manualPars:row.pars};
           const ok = await addAndSave(COLLECTIONS.rounds, newRound);
           if(ok) imported++; else failed++;
