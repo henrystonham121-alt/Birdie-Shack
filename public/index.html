@@ -1041,7 +1041,7 @@
           const champ = courseChampion(c.id);
           return `<tr><td class="name-cell">${c.name}</td><td class="mono">${c.par}</td><td class="mono">${c.rating}</td><td class="mono">${c.slope}</td><td class="mono">${c.holePars?'✓':'—'}</td>
           <td>${champ ? `${avatarImg(playerName(champ.playerId))}<span class="name-cell">${playerName(champ.playerId)}</span> <span class="section-note">(${champ.avgNet>0?'+':''}${champ.avgNet} avg net, ${champ.rounds} rounds)</span>` : `<span class="section-note">Not enough rounds yet (need 2+ from one player)</span>`}</td>
-          <td><button class="btn ghost small" data-delcourse="${c.id}">Remove</button></td></tr>`;
+          <td><button class="btn ghost small" data-editcourse="${c.id}">Edit</button> <button class="btn ghost small" data-delcourse="${c.id}">Remove</button></td></tr>`;
         }).join('')}</tbody>
       </table></div>`}
     `;
@@ -1263,6 +1263,66 @@ Madi</textarea>
       const ok = await saveItem(COLLECTIONS.rounds, r);
       if(!ok){ Object.assign(r, prev); render(); return; }
       showToast('Round updated');
+      closeModal();
+      render();
+    });
+  }
+
+  // ---------- EDIT COURSE ----------
+  function renderEditCourseModal(courseId){
+    const c = STATE.courses.find(c=>c.id===courseId);
+    if(!c) return '';
+    return `
+      <div class="modal-overlay" id="app-modal-overlay">
+        <div class="modal-box">
+          <button class="modal-close" id="app-modal-close" aria-label="Close">&times;</button>
+          <h2 style="margin:0 0 18px;font-family:'Fraunces',serif;font-size:20px;">Edit Course — ${c.name}</h2>
+          <form id="edit-course-form">
+            <div class="form-grid">
+              <div><label>Course name</label><input type="text" name="name" value="${c.name}" required></div>
+              <div><label>Par</label><input type="number" name="par" value="${c.par}" required></div>
+              <div><label>Course rating</label><input type="number" step="0.1" name="rating" value="${c.rating}" required></div>
+              <div><label>Slope</label><input type="number" name="slope" value="${c.slope}" required></div>
+            </div>
+            <label>Hole-by-hole pars (optional — 9 or 18 numbers, comma-separated)</label>
+            <input type="text" name="holePars" value="${c.holePars ? c.holePars.join(',') : ''}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
+            <p class="section-note" style="margin-top:8px;">Changing par/rating/slope updates future stats immediately (to-par, leaderboard). Rounds already logged at this course keep their old differential until you re-open and re-save them individually — that recalculates using the corrected numbers.</p>
+            <button class="btn" type="submit" style="margin-top:6px;">Save changes</button>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function openEditCourseModal(courseId){
+    openModal(renderEditCourseModal(courseId));
+    const form = document.getElementById('edit-course-form');
+    if(!form) return;
+    form.addEventListener('submit', async e=>{
+      e.preventDefault();
+      const c = STATE.courses.find(c=>c.id===courseId);
+      if(!c) return;
+      const fd = new FormData(form);
+      const prev = {name:c.name, par:c.par, rating:c.rating, slope:c.slope, holePars:c.holePars};
+      const name = String(fd.get('name')||'').trim();
+      const par = parseInt(fd.get('par'));
+      const rating = parseFloat(fd.get('rating'));
+      const slope = parseInt(fd.get('slope'));
+      const holeParsRaw = String(fd.get('holePars')||'').trim();
+      if(!name){ showToast('Course name is required'); return; }
+      c.name = name;
+      c.par = par;
+      c.rating = rating;
+      c.slope = slope;
+      if(holeParsRaw){
+        const parsed = holeParsRaw.split(',').map(s=>parseInt(s.trim())).filter(n=>!isNaN(n));
+        c.holePars = parsed.length ? parsed : null;
+      } else {
+        c.holePars = null;
+      }
+      const ok = await saveItem(COLLECTIONS.courses, c);
+      if(!ok){ Object.assign(c, prev); render(); return; }
+      showToast('Course updated');
       closeModal();
       render();
     });
@@ -1502,6 +1562,10 @@ Madi</textarea>
 
     main.querySelectorAll('[data-editround]').forEach(b=> b.addEventListener('click', ()=>{
       openEditRoundModal(b.dataset.editround);
+    }));
+
+    main.querySelectorAll('[data-editcourse]').forEach(b=> b.addEventListener('click', ()=>{
+      openEditCourseModal(b.dataset.editcourse);
     }));
 
     main.querySelectorAll('[data-delround]').forEach(b=> b.addEventListener('click', async ()=>{
