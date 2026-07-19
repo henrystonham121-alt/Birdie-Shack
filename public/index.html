@@ -221,10 +221,27 @@
     width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;
     margin-left:2px;border:2px solid var(--fairway-deep);
   }
-  .photo-upload-cell{display:flex;align-items:center;gap:6px;}
-  .photo-upload-cell input[type=file]{
-    font-size:10px;max-width:110px;padding:0;border:none;background:none;color:var(--ink-soft);
+  .modal-overlay{
+    position:fixed;inset:0;background:rgba(18,43,33,.6);display:flex;align-items:center;justify-content:center;
+    padding:20px;z-index:60;
   }
+  .modal-box{
+    background:var(--paper);border-radius:14px;padding:26px 24px 22px;max-width:380px;width:100%;
+    position:relative;box-shadow:0 16px 44px rgba(0,0,0,.35);border:1px solid var(--sand-line);
+  }
+  .modal-close{
+    position:absolute;top:10px;right:12px;background:none;border:none;font-size:24px;line-height:1;
+    cursor:pointer;color:var(--ink-soft);padding:4px;
+  }
+  .modal-close:hover{color:var(--ink);}
+  .modal-player-head{display:flex;align-items:center;gap:14px;margin-bottom:20px;padding-right:20px;}
+  .modal-player-head .avatar-carc{width:54px;height:46px;margin-right:0;}
+  .modal-player-head h2{margin:0;font-family:'Fraunces',serif;font-weight:700;font-size:21px;}
+  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px 18px;}
+  .stat-item{display:flex;flex-direction:column;gap:3px;}
+  .stat-item.full{grid-column:1 / -1;}
+  .stat-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-soft);}
+  .stat-value{font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;color:var(--fairway-deep);}
   @media(max-width:520px){
     table{font-size:12px;}
     th,td{padding:8px 5px;}
@@ -389,10 +406,10 @@
 
   const TABS = [
     {id:'leaderboard', label:'Leaderboard'},
+    {id:'players', label:'Players'},
     {id:'rounds', label:'Rounds'},
     {id:'h2h', label:'Head-to-Head'},
     {id:'courses', label:'Courses'},
-    {id:'players', label:'Players'},
     {id:'import', label:'Import'},
   ];
 
@@ -636,6 +653,19 @@
     });
     return totals;
   }
+  // Course a player has logged the most rounds at (ties broken by whichever
+  // course was reached first in round order).
+  function favouriteCourse(playerId){
+    const rounds = STATE.rounds.filter(r=>r.playerId===playerId);
+    if(!rounds.length) return null;
+    const counts = {};
+    rounds.forEach(r=>{ counts[r.courseId] = (counts[r.courseId]||0)+1; });
+    let bestId = null, bestCount = 0;
+    Object.keys(counts).forEach(id=>{
+      if(counts[id] > bestCount){ bestCount = counts[id]; bestId = id; }
+    });
+    return bestId ? {name: courseName(bestId), count: bestCount} : null;
+  }
 
   // ---------- LEADERBOARD ----------
   function buildLeaderboard(){
@@ -686,6 +716,7 @@
         ${TABS.map(t=>`<button data-tab="${t.id}" class="${ACTIVE_TAB===t.id?'active':''}">${t.label}</button>`).join('')}
       </nav>
       <main id="main"></main>
+      <div id="modal-root"></div>
     `;
     app.querySelectorAll('nav.tabs button').forEach(btn=>{
       btn.addEventListener('click', ()=>{ ACTIVE_TAB = btn.dataset.tab; render(); });
@@ -986,9 +1017,22 @@
   }
 
   function renderPlayers(){
-    const players = STATE.players;
+    const players = [...STATE.players].sort((a,b)=> a.name.localeCompare(b.name));
     return `
       <div class="section-head"><h2>The Roster</h2></div>
+      ${players.length===0? `<div class="empty"><strong>No golfers yet</strong>Add your crew below.</div>` : `
+      <div class="card"><table>
+        <thead><tr><th>Name</th><th>HCP Index</th><th>Rounds</th><th></th><th></th></tr></thead>
+        <tbody>${players.map(p=>{
+          const idx = computeHandicapIndex(p.id);
+          const n = STATE.rounds.filter(r=>r.playerId===p.id).length;
+          return `<tr><td class="name-cell">${avatarImg(p,'lg')}${p.name}</td>
+          <td class="mono">${idx===null?'NH':idx.toFixed(1)}</td><td class="mono">${n}</td>
+          <td><button class="btn ghost small" data-viewstats="${p.id}">View stats</button></td>
+          <td><button class="btn ghost small" data-delplayer="${p.id}">Remove</button></td></tr>`;
+        }).join('')}</tbody>
+      </table></div>`}
+      <div class="section-head" style="margin-top:22px;"><h2>Add a Golfer</h2></div>
       <div class="card">
         <form id="player-form" class="inline-form">
           <div><label>Name</label><input type="text" name="name" placeholder="e.g. Nikesh" required></div>
@@ -1010,19 +1054,60 @@ Phoebe
 Madi</textarea>
         <button class="btn" id="bulk-add-players-btn">Add all to roster</button>
       </div>
-      ${players.length===0? `<div class="empty"><strong>No golfers yet</strong>Add your crew above.</div>` : `
-      <div class="card"><table>
-        <thead><tr><th>Name</th><th>Photo</th><th>HCP Index</th><th>Rounds</th><th></th></tr></thead>
-        <tbody>${players.map(p=>{
-          const idx = computeHandicapIndex(p.id);
-          const n = STATE.rounds.filter(r=>r.playerId===p.id).length;
-          return `<tr><td class="name-cell">${avatarImg(p,'lg')}${p.name}</td>
-          <td><div class="photo-upload-cell"><input type="file" accept="image/*" data-photoplayer="${p.id}"></div></td>
-          <td class="mono">${idx===null?'NH':idx.toFixed(1)}</td><td class="mono">${n}</td>
-          <td><button class="btn ghost small" data-delplayer="${p.id}">Remove</button></td></tr>`;
-        }).join('')}</tbody>
-      </table></div>`}
     `;
+  }
+
+  // Single-player stats popup: name, avatar, handicap, rounds played,
+  // best score overall, birdies & pars, and favourite (most-played) course.
+  function renderPlayerStatsModal(playerId){
+    const p = STATE.players.find(p=>p.id===playerId);
+    if(!p) return '';
+    const idx = computeHandicapIndex(playerId);
+    const rounds = STATE.rounds.filter(r=>r.playerId===playerId);
+    const bestScore = rounds.length ? Math.min(...rounds.map(r=>r.gross)) : null;
+    const tally = playerHoleTally(playerId);
+    const fav = favouriteCourse(playerId);
+    return `
+      <div class="modal-overlay" id="stats-modal-overlay">
+        <div class="modal-box">
+          <button class="modal-close" id="stats-modal-close" aria-label="Close">&times;</button>
+          <div class="modal-player-head">
+            ${avatarImg(p,'lg')}
+            <h2>${p.name}</h2>
+          </div>
+          <div class="stat-grid">
+            <div class="stat-item"><span class="stat-label">Handicap</span><span class="stat-value">${idx===null?'NH':idx.toFixed(1)}</span></div>
+            <div class="stat-item"><span class="stat-label">Rounds Played</span><span class="stat-value">${rounds.length}</span></div>
+            <div class="stat-item"><span class="stat-label">Best Score</span><span class="stat-value">${bestScore===null?'—':bestScore}</span></div>
+            <div class="stat-item"><span class="stat-label">Birdies / Pars</span><span class="stat-value">${tally.birdie} / ${tally.par}</span></div>
+            <div class="stat-item full"><span class="stat-label">Favourite Course</span><span class="stat-value">${fav ? `${fav.name} <span style="font-size:12px;font-weight:500;color:var(--ink-soft);">(${fav.count} round${fav.count===1?'':'s'})</span>` : '—'}</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function openPlayerStatsModal(playerId){
+    const root = document.getElementById('modal-root');
+    if(!root) return;
+    root.innerHTML = renderPlayerStatsModal(playerId);
+    const overlay = document.getElementById('stats-modal-overlay');
+    if(overlay){
+      overlay.addEventListener('click', (e)=>{ if(e.target===overlay) closePlayerStatsModal(); });
+    }
+    const closeBtn = document.getElementById('stats-modal-close');
+    if(closeBtn) closeBtn.addEventListener('click', closePlayerStatsModal);
+    document.addEventListener('keydown', escCloseStatsModal);
+  }
+
+  function closePlayerStatsModal(){
+    const root = document.getElementById('modal-root');
+    if(root) root.innerHTML = '';
+    document.removeEventListener('keydown', escCloseStatsModal);
+  }
+
+  function escCloseStatsModal(e){
+    if(e.key === 'Escape') closePlayerStatsModal();
   }
 
   function renderImport(){
@@ -1271,23 +1356,8 @@ Madi</textarea>
       render();
     }));
 
-    main.querySelectorAll('[data-photoplayer]').forEach(inputEl=> inputEl.addEventListener('change', async ()=>{
-      const id = inputEl.dataset.photoplayer;
-      const file = inputEl.files && inputEl.files[0];
-      if(!file) return;
-      const player = STATE.players.find(p=>p.id===id);
-      if(!player) return;
-      try{
-        const dataUrl = await photoFileToDataUrl(file);
-        const prevPhoto = player.photo;
-        player.photo = dataUrl;
-        const ok = await saveItem(COLLECTIONS.players, player);
-        if(ok){ showToast(`Photo added for ${player.name}`); }
-        else { player.photo = prevPhoto; }
-      }catch(err){
-        showToast("Couldn't read that photo — try a different file");
-      }
-      render();
+    main.querySelectorAll('[data-viewstats]').forEach(b=> b.addEventListener('click', ()=>{
+      openPlayerStatsModal(b.dataset.viewstats);
     }));
 
     const bulkAddBtn = main.querySelector('#bulk-add-players-btn');
