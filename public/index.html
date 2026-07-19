@@ -585,6 +585,31 @@
       return isNaN(n) ? null : n;
     });
   }
+  // Same idea as parseNumberList, but for per-hole lists specifically:
+  // accepts either a 9-hole or an 18-hole card rather than forcing a
+  // fixed length, so a genuine 9-hole scorecard can be entered/imported
+  // as what it actually is instead of being padded or rejected.
+  function parseHoleList(raw){
+    if(raw===undefined || raw===null) return null;
+    const str = String(raw).trim();
+    if(!str) return null;
+    const parts = str.split(',').map(s=>s.trim());
+    if(parts.length !== 9 && parts.length !== 18) return null;
+    return parts.map(s=>{
+      if(s==='') return null;
+      const n = parseFloat(s);
+      return isNaN(n) ? null : n;
+    });
+  }
+  // Works out how many holes a round covers. Prefers something actually
+  // recognized (a scorecard's transcribed hole count, or a hole-by-hole
+  // list of exactly 9 or 18 entries) over guessing. Only falls back to the
+  // scoring heuristic — under 70 strokes is essentially always a 9-hole
+  // round, not a freakishly good 18 — when nothing more concrete is known.
+  function inferHoles(gross, recognizedHoleCount){
+    if(recognizedHoleCount === 9 || recognizedHoleCount === 18) return recognizedHoleCount;
+    return (typeof gross === 'number' && !isNaN(gross) && gross < 70) ? 9 : 18;
+  }
   // Definitions, exact and non-negotiable:
   //   Par    = hole score − hole par === 0
   //   Birdie = hole score − hole par === -1
@@ -617,7 +642,8 @@
   function computeConfirmedCounts(holeScores, holePars){
     const counts = {eagle:0, birdie:0, par:0, bogey:0, doublePlus:0, confirmedHoles:0};
     if(!Array.isArray(holeScores) || !Array.isArray(holePars)) return counts;
-    for(let i=0; i<18; i++){
+    const len = Math.max(holeScores.length, holePars.length);
+    for(let i=0; i<len; i++){
       const s = holeScores[i], p = holePars[i];
       if(s===null || s===undefined || p===null || p===undefined) continue;
       counts[classifyHole(s,p)]++;
@@ -848,13 +874,13 @@
             <div><label>Player</label><select name="playerId" required ${disabled?'disabled':''}>${playerOpts||'<option value="">Add a player first</option>'}</select></div>
             <div><label>Course</label><select name="courseId" required ${disabled?'disabled':''}>${courseOpts||'<option value="">Add a course first</option>'}</select></div>
             <div><label>Date</label><input type="date" name="date" value="${new Date().toISOString().slice(0,10)}" required></div>
-            <div><label>Holes played</label><select name="holes"><option value="18" selected>18 holes</option><option value="9">9 holes</option></select></div>
-            <div><label>Gross score</label><input type="number" name="gross" min="20" max="150" placeholder="e.g. 88" required></div>
+            <div><label>Holes played</label><select name="holes" id="round-holes-select"><option value="18" selected>18 holes</option><option value="9">9 holes</option></select></div>
+            <div><label>Gross score</label><input type="number" name="gross" id="round-gross" min="20" max="150" placeholder="e.g. 88" required></div>
           </div>
           <p class="section-note" style="margin:-6px 0 14px;">9-hole rounds count toward rounds played and pars/birdies, but are left out of handicap and best-score calculations, which need a full 18-hole card.</p>
-          <label>Hole-by-hole scores (optional — 18 numbers, comma-separated)</label>
-          <input type="text" name="holeScores" placeholder="6,5,5,4,5,5,5,4,6,4,5,6,2,5,4,4,6,7">
-          <p class="section-note" style="margin:-6px 0 14px;">Adding these (and hole pars on the course) feeds the Pars &amp; Birdies tally automatically. If you're just entering a total score, use the counts below instead.</p>
+          <label>Hole-by-hole scores (optional — 9 or 18 numbers, comma-separated)</label>
+          <input type="text" name="holeScores" id="round-holescores" placeholder="6,5,5,4,5,5,5,4,6,4,5,6,2,5,4,4,6,7">
+          <p class="section-note" style="margin:-6px 0 14px;">Adding these (and hole pars on the course) feeds the Pars &amp; Birdies tally automatically, and — if it's a clean 9 or 18 entries — sets Holes played for you above. If you're just entering a total score, use the counts below instead.</p>
           <label>Eagles / Birdies / Pars this round (optional, default 0 — only used if hole-by-hole scores above are left blank)</label>
           <div class="form-grid">
             <div><label style="text-transform:none;font-size:10px;">Eagles</label><input type="number" name="manualEagles" min="0" value="0"></div>
@@ -875,7 +901,7 @@
       ${rounds.length===0 ? `<div class="empty"><strong>No rounds logged</strong>Log one above, or bring in history via the Import tab.</div>` : `
       <div class="card">
         <table>
-          <thead><tr><th>Date</th><th>Player</th><th>Course</th><th>Holes</th><th>Gross</th><th>Diff.</th><th>Card</th><th></th></tr></thead>
+          <thead><tr><th>Date</th><th>Player</th><th>Course</th><th>Holes</th><th>Gross</th><th>Diff.</th><th>Card</th><th></th><th></th></tr></thead>
           <tbody>
             ${rounds.map(r=>{
               const c = courseById(r.courseId);
@@ -889,6 +915,7 @@
                 <td class="mono">${r.gross}${toPar!==null?` <span class="pill ${toPar>0?'over':(toPar<0?'under':'')}">${toPar>0?'+':''}${toPar}</span>`:''}</td>
                 <td class="mono">${is18HoleRound(r) ? r.differential : '—'}</td>
                 <td class="mono">${r.holeScores?'✓':'—'}</td>
+                <td><button class="btn ghost small" data-editround="${r.id}">Edit</button></td>
                 <td><button class="btn ghost small" data-delround="${r.id}">Remove</button></td>
               </tr>`;
             }).join('')}
@@ -958,7 +985,7 @@
             <div><label>Course rating</label><input type="number" step="0.1" name="rating" placeholder="e.g. 71.5" required></div>
             <div><label>Slope</label><input type="number" name="slope" placeholder="e.g. 128" value="113" required></div>
           </div>
-          <label>Hole-by-hole pars (optional — 18 numbers, comma-separated, enables pars/birdies tracking)</label>
+          <label>Hole-by-hole pars (optional — 9 or 18 numbers, comma-separated, enables pars/birdies tracking)</label>
           <input type="text" name="holePars" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
           <button class="btn" type="submit">Add course</button>
         </form>
@@ -1088,9 +1115,9 @@ Madi</textarea>
     const tally = playerHoleTally(playerId);
     const fav = favouriteCourse(playerId);
     return `
-      <div class="modal-overlay" id="stats-modal-overlay">
+      <div class="modal-overlay" id="app-modal-overlay">
         <div class="modal-box">
-          <button class="modal-close" id="stats-modal-close" aria-label="Close">&times;</button>
+          <button class="modal-close" id="app-modal-close" aria-label="Close">&times;</button>
           <div class="modal-player-head">
             ${avatarImg(p,'lg')}
             <h2>${p.name}</h2>
@@ -1108,26 +1135,101 @@ Madi</textarea>
   }
 
   function openPlayerStatsModal(playerId){
+    openModal(renderPlayerStatsModal(playerId));
+  }
+
+  // ---------- GENERIC MODAL ----------
+  function openModal(html){
     const root = document.getElementById('modal-root');
     if(!root) return;
-    root.innerHTML = renderPlayerStatsModal(playerId);
-    const overlay = document.getElementById('stats-modal-overlay');
+    root.innerHTML = html;
+    const overlay = document.getElementById('app-modal-overlay');
     if(overlay){
-      overlay.addEventListener('click', (e)=>{ if(e.target===overlay) closePlayerStatsModal(); });
+      overlay.addEventListener('click', (e)=>{ if(e.target===overlay) closeModal(); });
     }
-    const closeBtn = document.getElementById('stats-modal-close');
-    if(closeBtn) closeBtn.addEventListener('click', closePlayerStatsModal);
-    document.addEventListener('keydown', escCloseStatsModal);
+    const closeBtn = document.getElementById('app-modal-close');
+    if(closeBtn) closeBtn.addEventListener('click', closeModal);
+    document.addEventListener('keydown', escCloseModal);
   }
 
-  function closePlayerStatsModal(){
+  function closeModal(){
     const root = document.getElementById('modal-root');
     if(root) root.innerHTML = '';
-    document.removeEventListener('keydown', escCloseStatsModal);
+    document.removeEventListener('keydown', escCloseModal);
   }
 
-  function escCloseStatsModal(e){
-    if(e.key === 'Escape') closePlayerStatsModal();
+  function escCloseModal(e){
+    if(e.key === 'Escape') closeModal();
+  }
+
+  // ---------- EDIT ROUND ----------
+  function renderEditRoundModal(roundId){
+    const r = STATE.rounds.find(r=>r.id===roundId);
+    if(!r) return '';
+    const holesN = r.holes || 18;
+    const courseOpts = STATE.courses.map(c=>`<option value="${c.id}" ${c.id===r.courseId?'selected':''}>${c.name} (par ${c.par})</option>`).join('');
+    return `
+      <div class="modal-overlay" id="app-modal-overlay">
+        <div class="modal-box">
+          <button class="modal-close" id="app-modal-close" aria-label="Close">&times;</button>
+          <h2 style="margin:0 0 18px;font-family:'Fraunces',serif;font-size:20px;">Edit Round — ${playerName(r.playerId)}</h2>
+          <form id="edit-round-form">
+            <div class="form-grid">
+              <div><label>Course</label><select name="courseId">${courseOpts}</select></div>
+              <div><label>Date</label><input type="date" name="date" value="${r.date}" required></div>
+              <div><label>Holes played</label><select name="holes" id="edit-holes-select"><option value="18" ${holesN===18?'selected':''}>18 holes</option><option value="9" ${holesN===9?'selected':''}>9 holes</option></select></div>
+              <div><label>Gross score</label><input type="number" name="gross" id="edit-gross" min="20" max="150" value="${r.gross}" required></div>
+            </div>
+            <button class="btn" type="submit" style="margin-top:6px;">Save changes</button>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function openEditRoundModal(roundId){
+    openModal(renderEditRoundModal(roundId));
+    const form = document.getElementById('edit-round-form');
+    if(!form) return;
+    // If the score is changed to correct a bad entry, suggest the matching
+    // hole count too (under 70 = 9 holes) — but never fight a manual pick.
+    const holesSelect = form.querySelector('#edit-holes-select');
+    const grossInput = form.querySelector('#edit-gross');
+    let holesTouchedByUser = false;
+    if(holesSelect){
+      holesSelect.addEventListener('change', ()=>{ holesTouchedByUser = true; });
+      if(grossInput) grossInput.addEventListener('input', ()=>{
+        if(holesTouchedByUser) return;
+        holesSelect.value = String(inferHoles(parseFloat(grossInput.value), null));
+      });
+    }
+    form.addEventListener('submit', async e=>{
+      e.preventDefault();
+      const r = STATE.rounds.find(r=>r.id===roundId);
+      if(!r) return;
+      const fd = new FormData(form);
+      const courseId = fd.get('courseId');
+      const c = courseById(courseId);
+      const holes = parseInt(fd.get('holes')) === 9 ? 9 : 18;
+      const gross = parseFloat(fd.get('gross'));
+      const date = fd.get('date');
+      if(!isPlausibleGross(gross, holes)){
+        showToast(holes===9 ? 'Gross score should be a 9-hole total (20–90)' : 'Gross score should be a full 18-hole total (50–150)');
+        return;
+      }
+      const prev = {courseId:r.courseId, courseName:r.courseName, date:r.date, holes:r.holes, gross:r.gross, differential:r.differential};
+      r.courseId = courseId;
+      r.courseName = c ? c.name : r.courseName;
+      r.date = date;
+      r.holes = holes;
+      r.gross = gross;
+      r.differential = c ? computeDifferential(gross, c.rating, c.slope) : r.differential;
+      const ok = await saveItem(COLLECTIONS.rounds, r);
+      if(!ok){ Object.assign(r, prev); render(); return; }
+      showToast('Round updated');
+      closeModal();
+      render();
+    });
   }
 
   function renderImport(){
@@ -1141,7 +1243,7 @@ Madi</textarea>
         <div id="migrate-status"></div>
       </div>
       <div class="section-head" style="margin-top:22px;"><h2>Import from TheGrint</h2></div>
-      <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it. You can also tack on Eagles/Birdies/Pars as three more trailing columns if you know those counts, then a final <strong>Holes</strong> column (9 or 18) if any rows are 9-hole rounds — otherwise every row is assumed to be a full 18 holes. 9-hole rounds are kept out of handicap and best-score calculations.</div>
+      <div class="banner">TheGrint doesn't offer a personal data export or public API — the closest thing is their own copy/paste import tool, which expects <strong>Date, Course, Tees, Score</strong> per row. Paste that same layout below and it'll drop straight into this player's rounds. Add optional Rating/Slope/Par columns if you're logging a course for the first time — otherwise it defaults to par 72 / rating 72.0 / slope 113, which will slightly skew handicap accuracy until you correct it. You can also tack on Eagles/Birdies/Pars as three more trailing columns if you know those counts, then a final <strong>Holes</strong> column (9 or 18) to be explicit about round length. Leave that last column off and it's worked out automatically — any score under 70 is treated as a 9-hole round, otherwise 18. 9-hole rounds are kept out of handicap and best-score calculations.</div>
       <div class="card">
         <form id="import-form">
           <label>Which player is this scoring history for?</label>
@@ -1169,6 +1271,11 @@ Madi</textarea>
     const box = document.getElementById('scorecard-preview');
     const players = (parsed.players && parsed.players.length) ? parsed.players : [{name:null, totalScore:null, holeScores:null}];
     const needsAttention = (parsed.rating===null || parsed.rating===undefined || parsed.slope===null || parsed.slope===undefined);
+    // Prefer the hole count Claude actually counted on the card; if that
+    // wasn't legible, fall back to the pars array length, then the
+    // scoring heuristic on the first player's total.
+    const recognizedHoles = parsed.holes || (parsed.holePars && (parsed.holePars.length===9 || parsed.holePars.length===18) ? parsed.holePars.length : null);
+    const initialHoles = inferHoles(players[0] && players[0].totalScore, recognizedHoles);
     const wrapper = document.createElement('div');
     wrapper.className = 'card';
     wrapper.style.marginTop = '12px';
@@ -1181,9 +1288,10 @@ Madi</textarea>
         <div><label>Par</label><input type="number" class="sc-par" value="${parsed.par||72}"></div>
         <div><label>Rating</label><input type="number" step="0.1" class="sc-rating" value="${parsed.rating||72.0}"></div>
         <div><label>Slope</label><input type="number" class="sc-slope" value="${parsed.slope||113}"></div>
-        <div><label>Holes played</label><select class="sc-holes"><option value="18" selected>18 holes</option><option value="9">9 holes</option></select></div>
+        <div><label>Holes played</label><select class="sc-holes"><option value="18" ${initialHoles===18?'selected':''}>18 holes</option><option value="9" ${initialHoles===9?'selected':''}>9 holes</option></select></div>
       </div>
-      <label>Hole-by-hole pars (optional, 18 comma-separated)</label>
+      <p class="section-note" style="margin:-6px 0 10px;">${recognizedHoles ? `Detected as a ${recognizedHoles}-hole card from the photo.` : `Couldn't confirm hole count from the photo — defaulted from the score (under 70 = 9 holes). Check it's right.`}</p>
+      <label>Hole-by-hole pars (optional — 9 or 18 comma-separated, matching the card)</label>
       <input type="text" class="sc-holepars" value="${(parsed.holePars||[]).join(',')}" placeholder="5,4,3,4,4,4,5,3,4,4,4,5,3,5,4,3,4,4">
       <p class="section-note" style="margin-bottom:10px;">${needsAttention ? "Rating/slope weren't legible on the card — defaults are filled in, correct them for accurate handicaps." : "Double-check these against the card before saving."}</p>
       <table>
@@ -1193,14 +1301,14 @@ Madi</textarea>
             <tr>
               <td><input type="text" class="sc-pname" value="${p.name||''}" style="margin-bottom:0;"></td>
               <td><input type="number" class="sc-pscore" value="${p.totalScore||''}" style="margin-bottom:0;width:80px;"></td>
-              <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="18 comma-separated"></td>
+              <td><input type="text" class="sc-pholes" value="${(p.holeScores||[]).join(',')}" style="margin-bottom:0;min-width:160px;" placeholder="9 or 18 comma-separated"></td>
               <td>
                 <div style="display:flex;gap:4px;">
                   <input type="number" class="sc-peagles" min="0" value="${p.eagles||0}" style="margin-bottom:0;width:48px;" title="Eagles (score 2+ under hole par)">
                   <input type="number" class="sc-pbirdies" min="0" value="${p.birdies||0}" style="margin-bottom:0;width:48px;" title="Birdies (score 1 under hole par)">
                   <input type="number" class="sc-ppars" min="0" value="${p.pars||0}" style="margin-bottom:0;width:48px;" title="Pars (score equals hole par)">
                 </div>
-                <p class="section-note" style="margin:2px 0 0;">${p.confirmedHoles ? `Calculated from ${p.confirmedHoles}/18 holes with both score and par read clearly.` : 'Not calculated — hole pars or scores weren\'t both legible. Enter counts manually if you know them.'}</p>
+                <p class="section-note" style="margin:2px 0 0;">${p.confirmedHoles ? `Calculated from ${p.confirmedHoles}/${recognizedHoles||initialHoles} holes with both score and par read clearly.` : 'Not calculated — hole pars or scores weren\'t both legible. Enter counts manually if you know them.'}</p>
               </td>
               <td>
                 <select class="sc-passign" style="margin-bottom:0;">
@@ -1223,7 +1331,7 @@ Madi</textarea>
       const par = parseFloat(wrapper.querySelector('.sc-par').value)||72;
       const rating = parseFloat(wrapper.querySelector('.sc-rating').value)||72;
       const slope = parseFloat(wrapper.querySelector('.sc-slope').value)||113;
-      const holePars = parseNumberList(wrapper.querySelector('.sc-holepars').value, 18);
+      const holePars = parseHoleList(wrapper.querySelector('.sc-holepars').value);
       const holes = wrapper.querySelector('.sc-holes').value === '9' ? 9 : 18;
       let course = STATE.courses.find(c=>c.name.toLowerCase()===courseName.toLowerCase());
       let courseOk;
@@ -1253,17 +1361,21 @@ Madi</textarea>
           playerId = newP.id;
         }
         const gross = parseFloat(scoreVal);
-        if(!isPlausibleGross(gross, holes)){
-          showToast(`Skipped ${name} — "${scoreVal}" doesn't look like a ${holes}-hole score (${holes===9?'20–90':'50–150'})`);
+        const holeScores = parseHoleList(holesRaw);
+        // A row's own hole-by-hole list (if it's a clean 9 or 18) is the
+        // most concrete signal for that player — falls back to whatever
+        // was selected/detected for the card as a whole otherwise.
+        const rowHoles = (holeScores && (holeScores.length===9 || holeScores.length===18)) ? holeScores.length : holes;
+        if(!isPlausibleGross(gross, rowHoles)){
+          showToast(`Skipped ${name} — "${scoreVal}" doesn't look like a ${rowHoles}-hole score (${rowHoles===9?'20–90':'50–150'})`);
           failed++;
           continue;
         }
-        const holeScores = parseNumberList(holesRaw, 18);
         const manualEagles = parseInt(row.querySelector('.sc-peagles').value)||0;
         const manualBirdies = parseInt(row.querySelector('.sc-pbirdies').value)||0;
         const manualPars = parseInt(row.querySelector('.sc-ppars').value)||0;
         const differential = computeDifferential(gross, course.rating, course.slope);
-        const newRound = {id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, holes, differential, holeScores, manualEagles, manualBirdies, manualPars};
+        const newRound = {id:uid(), playerId, courseId:course.id, courseName:course.name, date, gross, holes:rowHoles, differential, holeScores, manualEagles, manualBirdies, manualPars};
         const ok = await addAndSave(COLLECTIONS.rounds, newRound);
         if(ok) count++; else failed++;
       }
@@ -1278,6 +1390,29 @@ Madi</textarea>
     const main = document.getElementById('main');
 
     const roundForm = main.querySelector('#round-form');
+    if(roundForm){
+      // Auto-detects Holes played from what's typed: a clean 9- or 18-entry
+      // hole-by-hole list wins outright; otherwise the under-70 scoring
+      // heuristic kicks in once a gross score is entered. Manually changing
+      // the dropdown afterwards is always respected — this only fills in a
+      // sensible default, it doesn't fight the user.
+      const holesSelect = roundForm.querySelector('#round-holes-select');
+      const grossInput = roundForm.querySelector('#round-gross');
+      const holeScoresInput = roundForm.querySelector('#round-holescores');
+      let holesTouchedByUser = false;
+      if(holesSelect){
+        holesSelect.addEventListener('change', ()=>{ holesTouchedByUser = true; });
+        const autoDetect = ()=>{
+          if(holesTouchedByUser) return;
+          const list = parseHoleList(holeScoresInput.value);
+          const recognized = (list && (list.length===9 || list.length===18)) ? list.length : null;
+          const gross = parseFloat(grossInput.value);
+          holesSelect.value = String(inferHoles(gross, recognized));
+        };
+        if(grossInput) grossInput.addEventListener('input', autoDetect);
+        if(holeScoresInput) holeScoresInput.addEventListener('input', autoDetect);
+      }
+    }
     if(roundForm) roundForm.addEventListener('submit', async e=>{
       e.preventDefault();
       const fd = new FormData(roundForm);
@@ -1302,7 +1437,7 @@ Madi</textarea>
       const playerId = fd.get('playerId');
       const date = fd.get('date');
       const differential = computeDifferential(gross, c.rating, c.slope);
-      const holeScores = parseNumberList(fd.get('holeScores'), 18);
+      const holeScores = parseHoleList(fd.get('holeScores'));
       const manualEagles = parseInt(fd.get('manualEagles'))||0;
       const manualBirdies = parseInt(fd.get('manualBirdies'))||0;
       const manualPars = parseInt(fd.get('manualPars'))||0;
@@ -1328,6 +1463,10 @@ Madi</textarea>
       showToast(opponentId ? 'Round + head-to-head logged' : 'Round logged');
       render();
     });
+
+    main.querySelectorAll('[data-editround]').forEach(b=> b.addEventListener('click', ()=>{
+      openEditRoundModal(b.dataset.editround);
+    }));
 
     main.querySelectorAll('[data-delround]').forEach(b=> b.addEventListener('click', async ()=>{
       const id = b.dataset.delround;
@@ -1359,7 +1498,7 @@ Madi</textarea>
     if(courseForm) courseForm.addEventListener('submit', async e=>{
       e.preventDefault();
       const fd = new FormData(courseForm);
-      const holePars = parseNumberList(fd.get('holePars'), 18);
+      const holePars = parseHoleList(fd.get('holePars'));
       const newCourse = {id:uid(), name:fd.get('name'), par:parseFloat(fd.get('par')), rating:parseFloat(fd.get('rating')), slope:parseFloat(fd.get('slope')), holePars};
       const ok = await addAndSave(COLLECTIONS.courses, newCourse);
       if(ok) showToast('Course added');
@@ -1462,11 +1601,13 @@ Madi</textarea>
         const delim = line.includes('\t') ? '\t' : ',';
         const cols = line.split(delim).map(s=>s.trim());
         const [date, course, tees, score, rating, slope, par, eagles, birdies, pars, holes] = cols;
+        const scoreNum = parseFloat(score);
+        const explicitHoles = (parseInt(holes)===9 || parseInt(holes)===18) ? parseInt(holes) : null;
         return {
-          date: date, course: course, tees: tees||'', score: parseFloat(score),
+          date: date, course: course, tees: tees||'', score: scoreNum,
           rating: rating?parseFloat(rating):72.0, slope: slope?parseFloat(slope):113, par: par?parseFloat(par):72,
           eagles: eagles?parseInt(eagles):0, birdies: birdies?parseInt(birdies):0, pars: pars?parseInt(pars):0,
-          holes: parseInt(holes)===9 ? 9 : 18
+          holes: inferHoles(scoreNum, explicitHoles)
         };
       }).filter(r=> r.course && !isNaN(r.score));
 
@@ -1532,8 +1673,9 @@ Madi</textarea>
   "par": number or null,
   "rating": number or null,
   "slope": number or null,
-  "holePars": array of exactly 18 entries (numbers, or null for any single hole whose printed par you can't read with certainty) — this is the PAR row, one value per hole, not a total,
-  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array of exactly 18 entries (numbers, or null for any single hole whose printed score you can't read with certainty) — one value per hole, not a total } ]
+  "holes": 9 or 18 — count the hole columns actually printed on the card (a front-9 or back-9-only card is 9; a full card is 18) — this must be exactly one of those two numbers,
+  "holePars": array with exactly as many entries as "holes" above (numbers, or null for any single hole whose printed par you can't read with certainty) — this is the PAR row, one value per hole, not a total,
+  "players": [ { "name": string or null, "totalScore": number or null, "holeScores": array with exactly as many entries as "holes" above (numbers, or null for any single hole whose printed score you can't read with certainty) — one value per hole, not a total } ]
 }
 Rules: transcribe only the digits actually printed for each hole — never estimate, infer, or fill in a value you're not confident of; use null for that single hole instead. Ignore any circles, boxes, colors, dots, or other decorative markings on the card entirely — they are not a reliable signal and must not influence what you transcribe. If a total score isn't printed but every hole score for that player is legible, you may sum them. List every player column on the card.`;
           const data = await callClaudeAPI({
@@ -1546,6 +1688,10 @@ Rules: transcribe only the digits actually printed for each hole — never estim
           if(data.error){ failed++; continue; }
           const parsed = extractJSON(extractText(data));
           if(!parsed){ failed++; continue; }
+          // Trust the recognized hole count only if it's exactly 9 or 18;
+          // anything else (missing, malformed) is left unset so the rest
+          // of the flow falls back to detecting it from the data itself.
+          parsed.holes = (parsed.holes===9 || parsed.holes===18) ? parsed.holes : null;
           // Classification happens here, in code, from the transcribed
           // per-hole numbers only — never from the model's own opinion.
           if(Array.isArray(parsed.players)){
