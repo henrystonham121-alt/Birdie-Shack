@@ -725,14 +725,10 @@
 
   // ---------- LEADERBOARD ----------
   function buildLeaderboard(){
-    return STATE.players.map(p=>{
+    const raw = STATE.players.map(p=>{
       const rounds = STATE.rounds.filter(r=>r.playerId===p.id);
       const rounds18 = rounds.filter(is18HoleRound);
       const idx = computeHandicapIndex(p.id);
-      const matches = STATE.matches.filter(m=>m.players.includes(p.id));
-      const wins = matches.filter(m=>m.winnerId===p.id).length;
-      const losses = matches.filter(m=>m.winnerId && m.winnerId!==p.id).length;
-      const halvedCount = matches.filter(m=>!m.winnerId).length;
       let bestNet = null;
       let scoreVsHcpTotal = 0;
       if(rounds18.length && idx!==null){
@@ -744,20 +740,43 @@
       }
       const tally = playerHoleTally(p.id);
       const parsBirdiesTotal = tally.eagle*8 + tally.birdie*5 + tally.par*2;
-      const totalMatches = wins+losses+halvedCount;
 
-      // Averaged per round/match played, so a player with 3 rounds isn't
-      // outranked purely by someone who's logged 30 — volume doesn't buy points.
-      // Score-vs-handicap is averaged over 18-hole rounds only, since that's
-      // the only pool it was computed from; pars/birdies still count every
+      // Averaged per round played, so a player with 3 rounds isn't outranked
+      // purely by someone who's logged 30 — volume doesn't buy points.
+      // Score-vs-handicap only counts 18-hole rounds (the only pool a
+      // handicap is computed from); null means not enough 18-hole rounds
+      // yet to be ranked on this metric. Pars/birdies/eagles count every
       // round played, 9-hole included.
-      const scoreVsHcpAvg = rounds18.length ? Math.round((scoreVsHcpTotal/rounds18.length)*10)/10 : 0;
+      const scoreVsHcpAvg = (rounds18.length && idx!==null) ? Math.round((scoreVsHcpTotal/rounds18.length)*10)/10 : null;
       const parsBirdiesAvg = rounds.length ? Math.round((parsBirdiesTotal/rounds.length)*10)/10 : 0;
-      const h2hAvg = totalMatches ? Math.round(((wins*3 + halvedCount*1)/totalMatches)*10)/10 : 0;
-      const performanceScore = Math.round((scoreVsHcpAvg + parsBirdiesAvg + h2hAvg)*10)/10;
 
-      return {player:p, roundsPlayed:rounds.length, idx, wins, losses, halved:halvedCount, bestNet, tally,
-        scoreVsHcpAvg, parsBirdiesAvg, h2hAvg, performanceScore};
+      return {player:p, roundsPlayed:rounds.length, idx, bestNet, tally, scoreVsHcpAvg, parsBirdiesAvg};
+    });
+
+    // Score vs Hcp and Pars/Birdies live on completely different scales
+    // (strokes-relative-to-par vs. points-per-round), so each is min-max
+    // normalized to 0-100 across the current field before weighting —
+    // that's what makes "75%" and "25%" a real weighting rather than raw
+    // units of very different sizes. Field's current best on a metric
+    // scores 100 on it, field's current worst scores 0. Players with no
+    // 18-hole rounds yet score 0 on Score vs Hcp until they've established one.
+    const svhVals = raw.filter(r=>r.scoreVsHcpAvg!==null).map(r=>r.scoreVsHcpAvg);
+    const pbVals = raw.map(r=>r.parsBirdiesAvg);
+    const svhMin = svhVals.length ? Math.min(...svhVals) : 0;
+    const svhMax = svhVals.length ? Math.max(...svhVals) : 0;
+    const pbMin = pbVals.length ? Math.min(...pbVals) : 0;
+    const pbMax = pbVals.length ? Math.max(...pbVals) : 0;
+    function normalize(val, min, max){
+      if(val===null) return 0;
+      if(max===min) return 100; // no spread in the field — everyone's on equal footing
+      return Math.round(((val-min)/(max-min))*1000)/10;
+    }
+
+    return raw.map(r=>{
+      const svhNorm = normalize(r.scoreVsHcpAvg, svhMin, svhMax);
+      const pbNorm = normalize(r.parsBirdiesAvg, pbMin, pbMax);
+      const performanceScore = Math.round((svhNorm*0.75 + pbNorm*0.25)*10)/10;
+      return {...r, svhNorm, pbNorm, performanceScore};
     }).sort((a,b)=> b.performanceScore-a.performanceScore || (a.idx===null?999:a.idx)-(b.idx===null?999:b.idx));
   }
 
@@ -817,11 +836,11 @@
       </div>
       <div class="section-head">
         <h2>Season Leaderboard</h2>
-        <span class="section-note">Performance Score = Score-vs-Handicap + Pars/Birdies + Head-to-Head. See legend below for the full formula.</span>
+        <span class="section-note">Performance Score = 75% Score-vs-Handicap + 25% Pars/Birdies/Eagles (each normalized 0–100 across the group). See legend below.</span>
       </div>
       <div class="card">
         <table>
-          <thead><tr><th>#</th><th>Player</th><th>HCP</th><th>Rounds</th><th>Score vs Hcp (avg)</th><th>Pars/Birdies (avg)</th><th>H2H (avg)</th><th>Performance Score</th></tr></thead>
+          <thead><tr><th>#</th><th>Player</th><th>HCP</th><th>Rounds</th><th>Score vs Hcp (avg)</th><th>Pars/Birdies (avg)</th><th>Performance Score</th></tr></thead>
           <tbody>
             ${rows.map((r,i)=>`
               <tr>
@@ -829,19 +848,17 @@
                 <td class="name-cell">${avatarImg(r.player.name)}${nationalityFlags(r.player.name)}${r.player.name}${i===0 && r.performanceScore>0 ? ' <span class="pill">Top of the ledger</span>':''}</td>
                 <td class="mono">${r.idx===null?'NH':r.idx.toFixed(1)}</td>
                 <td class="mono">${r.roundsPlayed}</td>
-                <td class="mono">${r.scoreVsHcpAvg>0?'+':''}${r.scoreVsHcpAvg}</td>
+                <td class="mono">${r.scoreVsHcpAvg===null?'—':(r.scoreVsHcpAvg>0?'+':'')+r.scoreVsHcpAvg}</td>
                 <td class="mono">${r.parsBirdiesAvg}</td>
-                <td class="mono">${r.h2hAvg} <span class="section-note" style="display:inline;">(${r.wins}-${r.losses}-${r.halved})</span></td>
                 <td class="mono">${r.performanceScore}</td>
               </tr>
             `).join('')}
           </tbody>
         </table>
         <p class="legend">
-          Every component below is averaged per round (or per match) played, not summed — so someone who's logged 3 rounds is judged on the same footing as someone with 30, not outranked purely by volume.<br>
-          <strong>Score vs Hcp</strong>: average of (course par − net score) across your rounds. Positive means playing better than your handicap predicts.<br>
-          <strong>Pars/Birdies</strong>: average points per round from (8×eagles + 5×birdies + 2×pars). Defined per hole as: par = score equals hole par, birdie = score is exactly 1 under hole par, eagle = score is 2 or more under hole par. Calculated automatically by comparing hole-by-hole scores to hole-by-hole pars (never guessed from markings or color coding) — or entered manually on a simple score entry.<br>
-          <strong>H2H</strong>: average points per match from your win-loss-halved record; 3pts per win, 1pt per halved match, 0 for a loss. A simple round with no opponent logged doesn't count as a match either way.<br>
+          <strong>Score vs Hcp</strong>: average of (course par − net score) across your 18-hole rounds. Positive means playing better than your handicap predicts. Needs at least one 18-hole round with a handicap index to be ranked here — shown as "—" until then.<br>
+          <strong>Pars/Birdies</strong>: average points per round from (8×eagles + 5×birdies + 2×pars), every round played including 9-holers. Defined per hole as: par = score equals hole par, birdie = score is exactly 1 under hole par, eagle = score is 2 or more under hole par. Calculated automatically by comparing hole-by-hole scores to hole-by-hole pars (never guessed from markings or color coding) — or entered manually on a simple score entry.<br>
+          <strong>Performance Score</strong>: both metrics above are converted to a 0–100 scale relative to the current group (the field's best on that metric scores 100, the field's worst scores 0), then combined 75% Score vs Hcp + 25% Pars/Birdies. This keeps the weighting meaningful regardless of the raw units, and every round counts equally — logging more rounds doesn't buy extra points on its own.<br>
           NH = not enough rounds yet for a handicap index.
         </p>
       </div>
