@@ -143,6 +143,7 @@
   .rank{font-family:'Fraunces',serif;font-weight:700;font-size:16px;color:var(--fairway);}
   .rank-1{color:var(--flag);}
   .name-cell{font-weight:600;}
+  .flag-cell{display:inline-block;margin-right:6px;font-size:.95em;letter-spacing:1px;}
   .mono{font-family:'IBM Plex Mono',monospace;}
   .pill{
     display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:10.5px;
@@ -280,6 +281,24 @@
     let h = 0;
     for(let i=0;i<str.length;i++){ h = (h<<5) - h + str.charCodeAt(i); h |= 0; }
     return Math.abs(h);
+  }
+  const NATIONALITY_FLAGS = {
+    ben: ['🇸🇬'],
+    dan: ['🏴󠁧󠁢󠁥󠁮󠁧󠁿'],
+    henry: ['🏴󠁧󠁢󠁥󠁮󠁧󠁿'],
+    jan: ['🇩🇪'],
+    lloyd: ['🏴󠁧󠁢󠁥󠁮󠁧󠁿', '🇩🇪'],
+    madi: ['🇨🇦'],
+    nick: ['🇳🇿'],
+    nikesh: ['🇨🇦'],
+    phoebe: ['🇸🇬'],
+    sunil: ['🇨🇦'],
+    suraj: ['🇲🇾'],
+  };
+  function nationalityFlags(name){
+    const flags = NATIONALITY_FLAGS[String(name||'').trim().toLowerCase()];
+    if(!flags || !flags.length) return '';
+    return `<span class="flag-cell">${flags.join(' ')}</span>`;
   }
   const SHIRT_COLORS = ['#2f6f4f','#1d5b8f','#a3453a','#6a4c93','#c47a17','#2d7d7d','#8f3b6b','#3c5a2a','#b5651d','#375a7f'];
   const SKIN_TONES = ['#f2c9a0','#e8b088','#d9a066','#a9714f','#7a4a2b'];
@@ -807,7 +826,7 @@
             ${rows.map((r,i)=>`
               <tr>
                 <td class="rank ${i===0?'rank-1':''}">${i+1}</td>
-                <td class="name-cell">${avatarImg(r.player.name)}${r.player.name}${i===0 && r.performanceScore>0 ? ' <span class="pill">Top of the ledger</span>':''}</td>
+                <td class="name-cell">${avatarImg(r.player.name)}${nationalityFlags(r.player.name)}${r.player.name}${i===0 && r.performanceScore>0 ? ' <span class="pill">Top of the ledger</span>':''}</td>
                 <td class="mono">${r.idx===null?'NH':r.idx.toFixed(1)}</td>
                 <td class="mono">${r.roundsPlayed}</td>
                 <td class="mono">${r.scoreVsHcpAvg>0?'+':''}${r.scoreVsHcpAvg}</td>
@@ -833,7 +852,7 @@
           <tbody>
             ${rows.map(r=>`
               <tr>
-                <td class="name-cell">${avatarImg(r.player.name)}${r.player.name}</td>
+                <td class="name-cell">${avatarImg(r.player.name)}${nationalityFlags(r.player.name)}${r.player.name}</td>
                 <td class="mono">${r.tally.eagle}</td>
                 <td class="mono">${r.tally.birdie}</td>
                 <td class="mono">${r.tally.par}</td>
@@ -1072,7 +1091,7 @@
         <tbody>${players.map(p=>{
           const idx = computeHandicapIndex(p.id);
           const n = STATE.rounds.filter(r=>r.playerId===p.id).length;
-          return `<tr><td class="name-cell">${avatarImg(p,'lg')}${p.name}</td>
+          return `<tr><td class="name-cell">${avatarImg(p,'lg')}${nationalityFlags(p.name)}${p.name}</td>
           <td class="mono">${idx===null?'NH':idx.toFixed(1)}</td><td class="mono">${n}</td>
           <td><button class="btn ghost small" data-viewstats="${p.id}">View stats</button></td>
           <td><button class="btn ghost small" data-delplayer="${p.id}">Remove</button></td></tr>`;
